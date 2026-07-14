@@ -2,12 +2,16 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import router as auth_router
 from app.db import get_session
 
 # FastAPI is the ASGI application object. uvicorn (the server) imports this
 # `app` and drives it. Everything we build — routes, middleware, startup hooks —
 # hangs off this object.
 app = FastAPI(title="Clinical Scribe API")
+
+# Mount the /auth routes (signup, login) onto the app.
+app.include_router(auth_router)
 
 
 @app.get("/health")

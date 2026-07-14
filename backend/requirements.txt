@@ -11,3 +11,7 @@ pydantic-settings
 
 # HTTP client (used by FastAPI's TestClient for our smoke tests)
 httpx
+
+# Auth: password hashing (bcrypt, used directly) + JWT access tokens
+bcrypt
+PyJWT

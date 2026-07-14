@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # --- Auth (wired up when we build the auth layer) ---
     jwt_secret: str = "dev-insecure-change-me"
     jwt_access_ttl_minutes: int = 20
+    refresh_token_ttl_days: int = 30
 
     # --- Anthropic (wired up when we build generation) ---
     anthropic_api_key: str = ""
