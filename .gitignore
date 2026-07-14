@@ -1,0 +1,27 @@
+# Secrets — never commit real credentials
+.env
+*.env
+!.env.example
+
+# Personal / AI-assistant context — kept locally, not part of the committed deliverable
+CLAUDE.md
+docs/PROGRESS.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

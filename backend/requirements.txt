@@ -1,0 +1,13 @@
+# Web framework + ASGI server
+fastapi
+uvicorn[standard]
+
+# ORM / models (SQLModel sits on top of SQLAlchemy) + async Postgres driver
+sqlmodel
+asyncpg
+
+# Typed settings loaded from environment / .env
+pydantic-settings
+
+# HTTP client (used by FastAPI's TestClient for our smoke tests)
+httpx
