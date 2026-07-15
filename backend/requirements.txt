@@ -15,3 +15,6 @@ httpx
 # Auth: password hashing (bcrypt, used directly) + JWT access tokens
 bcrypt
 PyJWT
+
+# Anthropic SDK — SOAP note generation (async client, streaming)
+anthropic

@@ -5,9 +5,11 @@ what it gets back. Keeping them separate from the `models.py` tables means the
 DB shape and the wire shape can differ — e.g. we never expose `password_hash`.
 """
 
+from datetime import date, datetime
+
 from pydantic import BaseModel, ConfigDict
 
-from app.models import Role
+from app.models import EncounterStatus, Role
 
 
 class SignupRequest(BaseModel):
@@ -57,3 +59,33 @@ class RefreshRequest(BaseModel):
     """Body for POST /auth/refresh."""
 
     refresh_token: str
+
+
+class EncounterCreate(BaseModel):
+    """Body for POST /encounters — start a visit.
+
+    We take the patient's identity fields (not a patient_id) because the caller
+    is a provider typing in front of a patient; the backend deduplicates them
+    into the global `patients` table by name + DOB. `template_id` and
+    `transcript_text` are optional so a draft can be started before either is set.
+    """
+
+    patient_first_name: str
+    patient_last_name: str
+    patient_dob: date
+    template_id: int | None = None
+    transcript_text: str | None = None
+
+
+class EncounterRead(BaseModel):
+    """Public view of an encounter row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    patient_id: int
+    provider_id: int
+    template_id: int | None
+    status: EncounterStatus
+    transcript_text: str | None
+    created_at: datetime
