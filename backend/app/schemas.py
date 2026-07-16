@@ -89,3 +89,33 @@ class EncounterRead(BaseModel):
     status: EncounterStatus
     transcript_text: str | None
     created_at: datetime
+
+
+class NoteVersionCreate(BaseModel):
+    """Body for POST /encounters/{id}/versions — the provider-approved SOAP note.
+
+    Four separate fields, not one blob: by the time a note reaches this endpoint a
+    human has reviewed and stands behind each section, so it arrives already split
+    into S/O/A/P. Parsing the AI's streamed markdown into sections is the frontend's
+    (review UI's) job; the backend stores exactly what the provider approved.
+    """
+
+    subjective: str
+    objective: str
+    assessment: str
+    plan: str
+
+
+class NoteVersionRead(BaseModel):
+    """Public view of a saved note version."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    encounter_id: int
+    version_number: int
+    subjective: str
+    objective: str
+    assessment: str
+    plan: str
+    saved_at: datetime

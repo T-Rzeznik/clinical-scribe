@@ -6,6 +6,7 @@
 # Personal / AI-assistant context — kept locally, not part of the committed deliverable
 CLAUDE.md
 docs/PROGRESS.md
+docs/KNOWLEDGE_GAPS.md
 
 # Python
 __pycache__/

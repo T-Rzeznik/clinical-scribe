@@ -11,14 +11,21 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.db import get_session
 from app.deps import get_current_user
 from app.generation import stream_soap_note
-from app.models import Encounter, Patient, Template, User
-from app.schemas import EncounterCreate, EncounterRead
+from app.models import Encounter, NoteVersion, Patient, Template, User
+from app.patient_history import get_patient_history
+from app.schemas import (
+    EncounterCreate,
+    EncounterRead,
+    NoteVersionCreate,
+    NoteVersionRead,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,12 +150,25 @@ async def generate_note(
     # 3. Resolve the template prompt (explicit, else the seeded default).
     system_prompt = await _resolve_template_prompt(session, encounter.template_id)
 
+    # 3b. Build the tool executor Claude may call mid-generation. It's a CLOSURE
+    #     over the encounter's real patient + the requesting provider, so the
+    #     model can't reach another patient's data — it passes no arguments.
+    async def tool_executor(name: str, tool_input: dict) -> str:
+        if name == "get_patient_history":
+            return await get_patient_history(
+                session,
+                patient_id=encounter.patient_id,
+                provider_id=current_user.id,
+                exclude_encounter_id=encounter.id,
+            )
+        return f"Unknown tool: {name}"
+
     # 4. The SSE body: wrap each text chunk from Claude in a `data: {...}\n\n` frame.
     #    We JSON-encode the chunk so newlines/quotes in the note can't break the
     #    SSE framing (blank line = end of one event).
     async def event_stream():
         try:
-            async for chunk in stream_soap_note(system_prompt, transcript):
+            async for chunk in stream_soap_note(system_prompt, transcript, tool_executor):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"  # signal clean completion
         except Exception:  # noqa: BLE001 — the stream already started; can't send an HTTP error now
@@ -163,3 +183,62 @@ async def generate_note(
             "X-Accel-Buffering": "no",    # tell nginx (prod) not to buffer the stream
         },
     )
+
+
+@router.post(
+    "/{encounter_id}/versions",
+    response_model=NoteVersionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_note_version(
+    encounter_id: int,
+    body: NoteVersionCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> NoteVersion:
+    """Persist a provider-approved SOAP note as the next immutable version.
+
+    `note_versions` is append-only: this never updates an existing row, it writes
+    v(N+1). What lands here is the text a human reviewed and stands behind, not raw
+    model output. Saving does NOT finalize the encounter — a corrected v2 can still
+    follow — so `status` is left untouched; finalizing is a separate action.
+    """
+    # 1. Ownership guard, identical to generate: your encounter, or a 404 that
+    #    doesn't reveal whether someone else's encounter exists.
+    encounter = await session.get(Encounter, encounter_id)
+    if encounter is None or encounter.provider_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found"
+        )
+
+    # 2. Next version number = current max for this encounter + 1 (1 if none yet).
+    #    Race note: two concurrent saves could compute the same number; the
+    #    UNIQUE(encounter_id, version_number) constraint is the backstop (one wins,
+    #    the other 500s on the violation). Fine for the demo; real fix is retry.
+    result = await session.execute(
+        select(func.max(NoteVersion.version_number)).where(
+            NoteVersion.encounter_id == encounter_id
+        )
+    )
+    next_version = (result.scalar_one() or 0) + 1
+
+    # 3. Snapshot the prompt this note was generated against so an old version stays
+    #    reproducible even if the template is edited later. (Resolved at save time —
+    #    generation persists nothing — so a template edit in the gap would show here.)
+    template_snapshot = await _resolve_template_prompt(session, encounter.template_id)
+
+    # 4. Write the immutable row, stamped with WHO approved it (saved_by = the human).
+    version = NoteVersion(
+        encounter_id=encounter_id,
+        version_number=next_version,
+        subjective=body.subjective,
+        objective=body.objective,
+        assessment=body.assessment,
+        plan=body.plan,
+        template_snapshot=template_snapshot,
+        saved_by=current_user.id,
+    )
+    session.add(version)
+    await session.commit()
+    await session.refresh(version)
+    return version
