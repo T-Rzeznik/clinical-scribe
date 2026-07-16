@@ -29,9 +29,9 @@ export default function Login({ onSuccess }) {
       <h2>Provider sign-in</h2>
       <form onSubmit={handleSubmit}>
         <label>
-          Email
+          Email or username
           <input
-            type="email"
+            type="text"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="username"
@@ -51,7 +51,9 @@ export default function Login({ onSuccess }) {
           {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>
-      <p className="hint">Seeded dev login: schen@scribe.local / password123</p>
+      <p className="hint">
+        Provider: schen@scribe.local / password123 · Admin: admin / password
+      </p>
     </div>
   );
 }

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.audit import record_event
 from app.config import settings
 from app.db import get_session
 from app.deps import get_current_user
@@ -93,7 +94,8 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
 
     access_token = create_access_token(user_id=user.id, role=user.role.value)
     refresh_token = await _issue_refresh_token(session, user.id)
-    await session.commit()  # persist the refresh-token row
+    record_event(session, actor_user_id=user.id, action="login", entity_type="user", entity_id=user.id)
+    await session.commit()  # persist the refresh-token row + audit entry
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 

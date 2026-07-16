@@ -61,6 +61,34 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class AdminStats(BaseModel):
+    """Dashboard overview counts for GET /admin/stats."""
+
+    users: int
+    providers: int
+    admins: int
+    patients: int
+    encounters: int
+    note_versions: int
+
+
+class RoleUpdate(BaseModel):
+    """Body for PATCH /admin/users/{id}/role — the new role to assign."""
+
+    role: Role
+
+
+class AuditEntry(BaseModel):
+    """One row of the audit log for GET /admin/audit."""
+
+    id: int
+    created_at: datetime
+    actor_email: str | None  # null for system/anonymous events
+    action: str
+    entity_type: str
+    entity_id: int | None
+
+
 class EncounterCreate(BaseModel):
     """Body for POST /encounters — start a visit.
 

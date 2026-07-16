@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.audit import record_event
 from app.db import get_session
 from app.deps import get_current_user
 from app.generation import stream_soap_note
@@ -176,6 +177,18 @@ async def generate_note(
         await _resolve_template_prompt(session, encounter.template_id)
         + ICD_SUGGESTION_INSTRUCTION
     )
+
+    # 3a. Audit the generation request before streaming. Commit now (mid-request is
+    #     safe: expire_on_commit=False keeps the ORM objects readable in the closure
+    #     below, and the streaming body can't emit an audit row once it's started).
+    record_event(
+        session,
+        actor_user_id=current_user.id,
+        action="generate_note",
+        entity_type="encounter",
+        entity_id=encounter.id,
+    )
+    await session.commit()
 
     # 3b. Build the tool executor Claude may call mid-generation. It's a CLOSURE
     #     over the encounter's real patient + the requesting provider, so the
@@ -344,6 +357,14 @@ async def save_note_version(
             )
         )
 
-    await session.commit()  # commits the version AND its codes atomically
+    record_event(
+        session,
+        actor_user_id=current_user.id,
+        action="save_version",
+        entity_type="note_version",
+        entity_id=version.id,
+        metadata={"encounter_id": encounter_id, "version_number": next_version},
+    )
+    await session.commit()  # commits the version, its codes, AND the audit entry atomically
     await session.refresh(version)
     return version

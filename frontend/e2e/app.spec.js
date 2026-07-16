@@ -140,9 +140,16 @@ test.describe("clear / next patient", () => {
 // ---------------------------------------------------- auto-refresh (A)
 
 test.describe("token expiry + auto-refresh", () => {
+  // Corrupt the stored access token (leaving the refresh token intact) to force a
+  // 401 on the next authed call — same thing the removed dev button did.
+  const expireAccessToken = (page) =>
+    page.evaluate(() =>
+      localStorage.setItem("access_token", "expired.invalid.token")
+    );
+
   test("expired access token silently recovers (action still works)", async ({ page }) => {
     await login(page);
-    await page.getByRole("button", { name: /Expire token/ }).click();
+    await expireAccessToken(page);
     // Next authed call (patient search) should 401 -> refresh -> retry -> succeed.
     await findPatient(page).fill("co");
     await expect(matches(page).first()).toBeVisible();
@@ -153,7 +160,7 @@ test.describe("token expiry + auto-refresh", () => {
   test("give-up path: dead refresh token bounces to login", async ({ page }) => {
     await login(page);
     await page.evaluate(() => localStorage.setItem("refresh_token", "garbage.dead.token"));
-    await page.getByRole("button", { name: /Expire token/ }).click();
+    await expireAccessToken(page);
     await findPatient(page).fill("co"); // authed call: 401 -> refresh fails -> onAuthLost
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
   });
@@ -188,6 +195,48 @@ test.describe("generate -> review -> ICD -> save", () => {
     await expect(page.getByRole("heading", { name: "ICD-10 codes" })).toBeVisible();
     await page.getByRole("button", { name: "Save note version" }).click();
     await expect(page.locator(".saved")).toContainText(/Saved as version/);
+  });
+});
+
+// ------------------------------------------------- admin RBAC + dashboard
+
+test.describe("admin RBAC + dashboard", () => {
+  test("provider does NOT see the Admin nav", async ({ page }) => {
+    await login(page); // schen = provider
+    await expect(page.getByRole("button", { name: "Admin" })).toHaveCount(0);
+  });
+
+  test("admin sees the Admin nav and dashboard (stats + audit)", async ({ page }) => {
+    await login(page, { email: "admin", password: "password" });
+    await page.getByRole("button", { name: "Admin" }).click();
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    // Stat cards render with numbers.
+    await expect(page.locator(".stat").first()).toBeVisible();
+    // Audit log shows at least this admin's login.
+    await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
+    await expect(page.locator(".action-tag").first()).toBeVisible();
+    // Can navigate back to the workspace.
+    await page.getByRole("button", { name: "Workspace" }).click();
+    await expect(page.getByRole("heading", { name: "New encounter" })).toBeVisible();
+  });
+
+  test("admin can assign a role, and can't demote themselves", async ({ page }) => {
+    await login(page, { email: "admin", password: "password" });
+    await page.getByRole("button", { name: "Admin" }).click();
+    await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
+
+    // mgarcia's row: promote to admin, then back to provider (leaves state clean).
+    const row = page.locator("tr", { hasText: "mgarcia@scribe.local" });
+    const select = row.locator("select.role-select");
+    await select.selectOption("admin");
+    await expect(select).toHaveValue("admin");
+    await select.selectOption("provider");
+    await expect(select).toHaveValue("provider");
+
+    // The admin's own row control is disabled (no self-demotion). "Ava Admin" is
+    // unique to the admin's row (the word "admin" alone appears in every select).
+    const ownRow = page.locator("tr", { hasText: "Ava Admin" });
+    await expect(ownRow.locator("select.role-select")).toBeDisabled();
   });
 });
 

@@ -34,13 +34,6 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-// DEV-ONLY: corrupt the stored ACCESS token (leaving the refresh token intact) so
-// the next authed call gets a 401 — lets us test the auto-refresh path without
-// waiting ~20 min for the real token to expire. Not wired into any real flow.
-export function expireAccessTokenForTesting() {
-  setToken("expired.invalid.token"); // syntactically-invalid JWT → backend 401s
-}
-
 // Exchange the stored refresh token for a fresh access token. Returns true if we
 // got one (and stored it), false if there's no refresh token or the endpoint
 // rejects it (expired/revoked → the session is really over).
@@ -79,6 +72,48 @@ async function authedFetch(url, options = {}) {
     return res; // hand back the original 401 so the caller still fails cleanly
   }
   return fetch(url, withAuth()); // retry once, now with the new access token
+}
+
+// The authenticated user (id, email, name, role). Used for RBAC — the app shows
+// the Admin nav only when role === "admin". The API is the real gate (403s).
+export async function getMe() {
+  const res = await authedFetch(`${BASE}/auth/me`);
+  if (!res.ok) throw new Error("Could not load current user.");
+  return res.json();
+}
+
+// --- admin (require_admin on the server) ---
+export async function adminStats() {
+  const res = await authedFetch(`${BASE}/admin/stats`);
+  if (!res.ok) throw new Error("Could not load stats.");
+  return res.json();
+}
+export async function adminAudit(limit = 50) {
+  const res = await authedFetch(`${BASE}/admin/audit?limit=${limit}`);
+  if (!res.ok) throw new Error("Could not load audit log.");
+  return res.json();
+}
+export async function adminUsers() {
+  const res = await authedFetch(`${BASE}/admin/users`);
+  if (!res.ok) throw new Error("Could not load users.");
+  return res.json();
+}
+export async function adminSetUserRole(userId, role) {
+  const res = await authedFetch(`${BASE}/admin/users/${userId}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+  if (!res.ok) {
+    let detail = "Could not change role.";
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch {
+      /* keep generic */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
 }
 
 export async function login(email, password) {

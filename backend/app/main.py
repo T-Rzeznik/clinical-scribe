@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin import router as admin_router
 from app.auth import router as auth_router
 from app.db import get_session
 from app.encounters import router as encounters_router
@@ -30,6 +31,7 @@ app.include_router(auth_router)
 app.include_router(encounters_router)
 app.include_router(icd_router)
 app.include_router(patients_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

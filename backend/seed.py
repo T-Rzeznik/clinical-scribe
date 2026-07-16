@@ -20,16 +20,17 @@ from app.db import SessionLocal
 from app.models import Role, Template, User
 from app.security import hash_password
 
-# Shared dev password for every seeded account. Fine for a local take-home;
-# NEVER a pattern for production (there, accounts self-register / use Secrets).
-DEV_PASSWORD = "password123"
+# Dev passwords for seeded accounts. Fine for a local take-home; NEVER a pattern
+# for production (there, accounts self-register / use Secrets). The admin uses a
+# short username + password for easy demo login; providers use email + password123.
+ADMIN_LOGIN = "admin"
 
-# (email, first_name, last_name, role) — 1 admin + 3 providers per the spec.
+# (login, password, first_name, last_name, role) — 1 admin + 3 providers per the spec.
 SEED_USERS = [
-    ("admin@scribe.local", "Ava", "Admin", Role.admin),
-    ("schen@scribe.local", "Sarah", "Chen", Role.provider),
-    ("jpatel@scribe.local", "Jamal", "Patel", Role.provider),
-    ("mgarcia@scribe.local", "Maria", "Garcia", Role.provider),
+    (ADMIN_LOGIN, "password", "Ava", "Admin", Role.admin),
+    ("schen@scribe.local", "password123", "Sarah", "Chen", Role.provider),
+    ("jpatel@scribe.local", "password123", "Jamal", "Patel", Role.provider),
+    ("mgarcia@scribe.local", "password123", "Maria", "Garcia", Role.provider),
 ]
 
 DEFAULT_TEMPLATE_NAME = "Standard SOAP Note"
@@ -87,7 +88,7 @@ abbreviations where a clinician would.
 async def main() -> None:
     async with SessionLocal() as session:
         # --- Users ---
-        for email, first_name, last_name, role in SEED_USERS:
+        for email, password, first_name, last_name, role in SEED_USERS:
             existing = await session.execute(select(User).where(User.email == email))
             if existing.scalar_one_or_none() is not None:
                 print(f"  user exists, skipping: {email}")
@@ -95,7 +96,7 @@ async def main() -> None:
             session.add(
                 User(
                     email=email,
-                    password_hash=hash_password(DEV_PASSWORD),
+                    password_hash=hash_password(password),
                     first_name=first_name,
                     last_name=last_name,
                     role=role,
@@ -109,7 +110,7 @@ async def main() -> None:
 
         # --- Default template (owned by the admin) ---
         admin_result = await session.execute(
-            select(User).where(User.email == "admin@scribe.local")
+            select(User).where(User.email == ADMIN_LOGIN)
         )
         admin = admin_result.scalar_one()  # guaranteed to exist after the loop above
 
