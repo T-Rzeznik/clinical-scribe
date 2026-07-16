@@ -91,6 +91,26 @@ class EncounterRead(BaseModel):
     created_at: datetime
 
 
+class PatientSearchResult(BaseModel):
+    """One autocomplete hit for GET /patients/search. Includes DOB so the provider
+    can disambiguate two patients with the same name before picking one.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    first_name: str
+    last_name: str
+    dob: date
+
+
+class IcdCodeIn(BaseModel):
+    """One ICD-10 code the provider attached to the note (part of the save body)."""
+
+    code: str
+    description: str
+
+
 class NoteVersionCreate(BaseModel):
     """Body for POST /encounters/{id}/versions — the provider-approved SOAP note.
 
@@ -98,12 +118,16 @@ class NoteVersionCreate(BaseModel):
     human has reviewed and stands behind each section, so it arrives already split
     into S/O/A/P. Parsing the AI's streamed markdown into sections is the frontend's
     (review UI's) job; the backend stores exactly what the provider approved.
+
+    `icd_codes` are the codes the provider selected (AI-suggested and/or searched);
+    they're persisted alongside the note as part of the record.
     """
 
     subjective: str
     objective: str
     assessment: str
     plan: str
+    icd_codes: list[IcdCodeIn] = []
 
 
 class NoteVersionRead(BaseModel):
@@ -119,3 +143,23 @@ class NoteVersionRead(BaseModel):
     assessment: str
     plan: str
     saved_at: datetime
+
+
+class NoteVersionDetail(NoteVersionRead):
+    """A saved version plus the ICD codes attached to it — used when browsing
+    history so the reader sees the full record, not just the SOAP text.
+    """
+
+    icd_codes: list[IcdCodeIn] = []
+
+
+class EncounterSummary(BaseModel):
+    """One row in a patient's encounter history: the visit plus how many note
+    versions it has and which is latest. Used by the read-only history views.
+    """
+
+    id: int
+    created_at: datetime
+    status: EncounterStatus
+    version_count: int
+    latest_version_number: int | None

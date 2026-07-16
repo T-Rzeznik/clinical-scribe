@@ -19,7 +19,7 @@ body {
   color: var(--ink);
 }
 
-.app { max-width: 860px; margin: 0 auto; padding: 0 16px 48px; }
+.app { max-width: 1200px; margin: 0 auto; padding: 0 16px 48px; }
 
 .topbar {
   display: flex;
@@ -28,6 +28,23 @@ body {
   padding: 18px 0;
 }
 .topbar h1 { font-size: 1.3rem; margin: 0; }
+.topbar-actions { display: flex; align-items: center; gap: 16px; }
+
+/* Two-column dashboard: input on the left, generated output on the right. On
+   narrow screens it collapses to a single stacked column. */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(340px, 420px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.col-input { position: sticky; top: 12px; }
+.col-input, .col-output { min-width: 0; }
+@media (max-width: 920px) {
+  .workspace { grid-template-columns: 1fr; }
+  .col-input { position: static; }
+}
+.placeholder { display: flex; align-items: center; justify-content: center; min-height: 200px; }
 
 .card {
   background: var(--card);
@@ -38,6 +55,8 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .card h2 { margin-top: 0; font-size: 1.05rem; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.card-head h2 { margin-bottom: 8px; }
 
 label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--muted); }
 input, textarea {
@@ -54,6 +73,39 @@ input, textarea {
 textarea { resize: vertical; }
 
 .patient-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+.patient-picker { margin-bottom: 16px; position: relative; }
+.patient-matches {
+  list-style: none; margin: 4px 0 0; padding: 4px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.patient-matches .match {
+  width: 100%; text-align: left; background: none; border: none;
+  color: var(--ink); font-weight: 400;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.patient-matches .match:hover { background: var(--accent); color: #fff; }
+.patient-matches .match:hover .dob { opacity: 1; }
+.patient-matches .dob { font-size: 0.85rem; opacity: 0.75; }
+.picked-patient { margin: 8px 0 0; font-size: 0.92rem; }
+
+.history-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.history-item { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.history-head {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 10px 12px; background: var(--card); border: none;
+  color: var(--ink); font-weight: 500;
+  cursor: pointer; text-align: left;
+}
+.history-head:hover { background: var(--bg); }
+.history-versions { padding: 4px 12px 12px; border-top: 1px solid var(--border); }
+.history-version { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.history-version:last-child { border-bottom: none; }
+.hv-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.hv-field { margin: 2px 0; font-size: 0.9rem; }
+.hv-codes { margin: 6px 0 0; font-size: 0.88rem; font-weight: 600; color: var(--accent); }
 
 button {
   font: inherit;
@@ -83,11 +135,14 @@ button.link {
   padding: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85rem;
-  max-height: 320px;
+  max-height: 240px;
   overflow: auto;
 }
 
+.soap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.soap-field { margin-bottom: 0; }
 .soap-field textarea { min-height: 60px; }
+@media (max-width: 560px) { .soap-grid { grid-template-columns: 1fr; } }
 
 .icd-search { display: flex; gap: 8px; margin-bottom: 12px; }
 .icd-search input { margin-top: 0; }
@@ -95,13 +150,39 @@ button.link {
 .chip {
   width: 100%;
   text-align: left;
-  background: #eef2ff;
+  background: var(--card);
   color: var(--ink);
   font-weight: 400;
-  border: 1px solid #dbe1ff;
+  border: 1px solid var(--border);
 }
+.chip:hover { border-color: var(--accent); }
 .chip.picked { background: var(--accent); color: #fff; border-color: var(--accent); }
-.chip strong { margin-right: 6px; }
+.chip strong { margin-right: 6px; color: var(--accent); }
+.chip.picked strong { color: #fff; }
+
+.icd-tray {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin-bottom: 14px; background: var(--card);
+}
+.tray-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tray-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.tray-chip {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: 6px; background: var(--accent); color: #fff;
+}
+.tray-chip strong { margin-right: 6px; }
+.tray-chip .remove {
+  background: rgba(255,255,255,0.25); color: #fff; border: none;
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 0; flex-shrink: 0;
+}
+.tray-chip .remove:hover { background: rgba(255,255,255,0.45); }
+
+.save-bar {
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px;
+}
+.save-bar .saved { margin: 0; }
 
 .hint { color: var(--muted); font-size: 0.8rem; }
 .error { color: var(--error); font-weight: 500; }

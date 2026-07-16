@@ -122,6 +122,24 @@ class NoteVersion(SQLModel, table=True):
     saved_at: datetime = Field(default_factory=utcnow, sa_type=DateTime(timezone=True))
 
 
+class NoteVersionIcdCode(SQLModel, table=True):
+    """ICD-10 codes the provider attached to a saved note version. Plain rows — no
+    pgvector needed (that's only for semantic SEARCH; storing chosen codes is just
+    persistence). `description` is snapshotted alongside the code so the record
+    stays readable even if the catalog changes. One row per (version, code).
+    """
+
+    __tablename__ = "note_version_icd_codes"
+    __table_args__ = (
+        UniqueConstraint("note_version_id", "code", name="uq_version_code"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    note_version_id: int = Field(foreign_key="note_versions.id")
+    code: str
+    description: str
+
+
 class RefreshToken(SQLModel, table=True):
     """The server-side half of auth. We store only a HASH of the token, so a DB
     leak can't be replayed. revoked_at lets us kill a session (e.g. deactivated

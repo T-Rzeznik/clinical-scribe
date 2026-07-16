@@ -44,13 +44,19 @@ async def stream_soap_note(
     system_prompt: str,
     transcript: str,
     tool_executor: ToolExecutor,
-) -> AsyncGenerator[str, None]:
-    """Yield the SOAP note in text chunks as Claude generates it.
+) -> AsyncGenerator[dict, None]:
+    """Yield generation events as Claude produces the note.
 
     Runs an agentic loop: each turn opens a stream, `yield`s the text as it
     arrives, then inspects the finished turn. If Claude stopped to call a tool
     (`stop_reason == "tool_use"`), we run the tool via `tool_executor`, append the
     result to the conversation, and loop for another turn. Otherwise we're done.
+
+    Events are dicts: {"type": "text", "text": ...} for note text, or
+    {"type": "reset"} emitted when a tool-use turn ends. A tool-use turn often
+    contains conversational narration ("I'll look up the prior notes…") that is
+    NOT part of the note; the reset tells the consumer to discard whatever it has
+    shown so far, so only the FINAL answer turn ends up as the note.
     """
     messages: list[dict] = [{"role": "user", "content": transcript}]
 
@@ -65,12 +71,16 @@ async def stream_soap_note(
             # Stream the visible text out as it's produced. During a tool-use turn
             # this may be empty (the model goes straight to the tool call).
             async for text_chunk in stream.text_stream:
-                yield text_chunk
+                yield {"type": "text", "text": text_chunk}
             final = await stream.get_final_message()
 
         # No tool requested → this was the final answer; the loop ends.
         if final.stop_reason != "tool_use":
             break
+
+        # This turn only led to a tool call — any text it streamed was narration.
+        # Tell the consumer to throw it away before the real note streams next turn.
+        yield {"type": "reset"}
 
         # Record Claude's turn verbatim (it holds the tool_use block we must answer).
         messages.append({"role": "assistant", "content": final.content})

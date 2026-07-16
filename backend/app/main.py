@@ -7,6 +7,7 @@ from app.auth import router as auth_router
 from app.db import get_session
 from app.encounters import router as encounters_router
 from app.icd import router as icd_router
+from app.patients import router as patients_router
 
 # FastAPI is the ASGI application object. uvicorn (the server) imports this
 # `app` and drives it. Everything we build — routes, middleware, startup hooks —
@@ -28,6 +29,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(encounters_router)
 app.include_router(icd_router)
+app.include_router(patients_router)
 
 
 @app.get("/health")

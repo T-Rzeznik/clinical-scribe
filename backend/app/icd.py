@@ -11,6 +11,7 @@ the implementation later is a drop-in — the route and frontend don't change.
 """
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from app.deps import get_current_user
 from app.models import User
@@ -57,6 +58,13 @@ ICD10_CATALOG: list[dict] = [
     {"code": "B34.9", "description": "Viral infection, unspecified"},
     {"code": "L03.90", "description": "Cellulitis, unspecified"},
     {"code": "T78.40XA", "description": "Allergy, unspecified, initial encounter"},
+    {"code": "J30.9", "description": "Allergic rhinitis, unspecified"},
+    {"code": "J30.1", "description": "Allergic rhinitis due to pollen (seasonal)"},
+    {"code": "J30.2", "description": "Other seasonal allergic rhinitis"},
+    {"code": "R06.02", "description": "Shortness of breath"},
+    {"code": "Z47.1", "description": "Aftercare following joint replacement surgery"},
+    {"code": "Z47.89", "description": "Encounter for other orthopedic aftercare"},
+    {"code": "Z98.890", "description": "Other specified postprocedural states"},
     {"code": "R53.83", "description": "Other fatigue"},
     {"code": "R42", "description": "Dizziness and giddiness"},
     {"code": "R11.2", "description": "Nausea with vomiting, unspecified"},
@@ -68,6 +76,29 @@ _INDEX: list[tuple[dict, set[str]]] = [
     (row, set(row["description"].lower().replace(",", " ").replace("-", " ").split()))
     for row in ICD10_CATALOG
 ]
+
+# Fast exact lookup by code, so we can validate AI-suggested codes against the
+# catalog (uppercased key — codes are case-insensitive but conventionally upper).
+_BY_CODE: dict[str, dict] = {row["code"].upper(): row for row in ICD10_CATALOG}
+
+
+def validate_codes(codes: list[str]) -> list[dict]:
+    """Filter a list of raw code strings down to the ones our catalog recognizes.
+
+    The AI SUGGESTS codes; this is the guardrail that keeps a hallucinated or
+    malformed code out of the record. We return the catalog's canonical
+    `{code, description}` (not the model's text) and drop anything unknown,
+    de-duplicating while preserving order.
+    """
+    seen: set[str] = set()
+    valid: list[dict] = []
+    for raw in codes:
+        key = raw.strip().upper()
+        row = _BY_CODE.get(key)
+        if row is not None and key not in seen:
+            seen.add(key)
+            valid.append(row)
+    return valid
 
 
 def search(query: str, limit: int = 5) -> list[dict]:
@@ -107,3 +138,23 @@ async def search_icd(
     Returns `{"results": [{code, description}, ...]}`, highest-ranked first.
     """
     return {"results": search(q, limit)}
+
+
+class ValidateRequest(BaseModel):
+    """Body for POST /icd/validate — the raw codes the AI suggested."""
+
+    codes: list[str]
+
+
+@router.post("/validate")
+async def validate_icd(
+    body: ValidateRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return only the AI-suggested codes that exist in our catalog (authed).
+
+    Returns `{"results": [{code, description}, ...]}` with canonical descriptions,
+    so the frontend can show trustworthy suggestions and never store a code we
+    don't recognize.
+    """
+    return {"results": validate_codes(body.codes)}

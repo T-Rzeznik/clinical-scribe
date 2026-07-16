@@ -1,5 +1,10 @@
-import { useState } from "react";
-import { getToken, clearToken } from "./api.js";
+import { useState, useEffect } from "react";
+import {
+  getToken,
+  clearToken,
+  setAuthLostHandler,
+  expireAccessTokenForTesting,
+} from "./api.js";
 import Login from "./Login.jsx";
 import Workspace from "./Workspace.jsx";
 
@@ -14,18 +19,36 @@ export default function App() {
     setLoggedIn(false);
   }
 
+  // Let api.js bounce us to the login screen when a token refresh fails (session
+  // truly gone). We register the same handler as manual logout. useEffect runs
+  // after render so we don't call setState during render; the empty dep array
+  // registers once for the app's lifetime.
+  useEffect(() => {
+    setAuthLostHandler(handleLogout);
+  }, []);
+
   return (
     <div className="app">
       <header className="topbar">
         <h1>AI Clinical Scribe</h1>
         {loggedIn && (
-          <button className="link" onClick={handleLogout}>
-            Log out
-          </button>
+          <div className="topbar-actions">
+            {/* DEV-ONLY: fake an expired access token to test auto-refresh. */}
+            <button
+              className="link"
+              onClick={expireAccessTokenForTesting}
+              title="Corrupt the access token so the next call triggers auto-refresh"
+            >
+              Expire token (dev)
+            </button>
+            <button className="link" onClick={handleLogout}>
+              Log out
+            </button>
+          </div>
         )}
       </header>
       {loggedIn ? (
-        <Workspace onAuthLost={handleLogout} />
+        <Workspace />
       ) : (
         <Login onSuccess={() => setLoggedIn(true)} />
       )}

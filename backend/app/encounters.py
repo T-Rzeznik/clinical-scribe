@@ -18,12 +18,21 @@ from sqlmodel import select
 from app.db import get_session
 from app.deps import get_current_user
 from app.generation import stream_soap_note
-from app.models import Encounter, NoteVersion, Patient, Template, User
+from app.models import (
+    Encounter,
+    NoteVersion,
+    NoteVersionIcdCode,
+    Patient,
+    Template,
+    User,
+)
 from app.patient_history import get_patient_history
 from app.schemas import (
     EncounterCreate,
     EncounterRead,
+    IcdCodeIn,
     NoteVersionCreate,
+    NoteVersionDetail,
     NoteVersionRead,
 )
 
@@ -39,6 +48,20 @@ DEFAULT_TEMPLATE_NAME = "Standard SOAP Note"
 # input" and rejected BEFORE we ever call (and pay for) the AI. Semantic junk that's
 # long enough to pass this is caught by Rule 3 in the template prompt instead.
 MIN_TRANSCRIPT_CHARS = 15
+
+# Appended to the template prompt at generation time so the model also SUGGESTS
+# ICD-10 codes. We ask for a single machine-parseable last line (codes only, comma
+# separated) — the frontend strips this line before showing the SOAP note, then
+# validates the codes against our catalog. The model only suggests; the catalog is
+# the source of truth for what can actually be stored.
+ICD_SUGGESTION_INSTRUCTION = (
+    "\n\nAfter the SOAP note, output exactly one final line in this format:\n"
+    "SUGGESTED_ICD_CODES: <comma-separated ICD-10 codes>\n"
+    "List the ICD-10 codes best supported by this encounter (primary diagnosis "
+    "plus any documented comorbidities). Use standard ICD-10 codes only (e.g. "
+    "R07.9, E11.9, I10). If none are clearly supported, write "
+    "'SUGGESTED_ICD_CODES: none'. Do not add any text after this line."
+)
 
 
 async def _get_or_create_patient(
@@ -147,8 +170,12 @@ async def generate_note(
             detail="Transcript is empty or too short to generate a note",
         )
 
-    # 3. Resolve the template prompt (explicit, else the seeded default).
-    system_prompt = await _resolve_template_prompt(session, encounter.template_id)
+    # 3. Resolve the template prompt (explicit, else the seeded default), then
+    #    append the ICD-suggestion instruction so the model also proposes codes.
+    system_prompt = (
+        await _resolve_template_prompt(session, encounter.template_id)
+        + ICD_SUGGESTION_INSTRUCTION
+    )
 
     # 3b. Build the tool executor Claude may call mid-generation. It's a CLOSURE
     #     over the encounter's real patient + the requesting provider, so the
@@ -168,8 +195,12 @@ async def generate_note(
     #    SSE framing (blank line = end of one event).
     async def event_stream():
         try:
-            async for chunk in stream_soap_note(system_prompt, transcript, tool_executor):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
+            async for event in stream_soap_note(system_prompt, transcript, tool_executor):
+                if event["type"] == "reset":
+                    # A tool-use turn's narration — tell the client to discard it.
+                    yield f"data: {json.dumps({'reset': True})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'text': event['text']})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"  # signal clean completion
         except Exception:  # noqa: BLE001 — the stream already started; can't send an HTTP error now
             logger.exception("SOAP generation failed for encounter %s", encounter_id)
@@ -183,6 +214,65 @@ async def generate_note(
             "X-Accel-Buffering": "no",    # tell nginx (prod) not to buffer the stream
         },
     )
+
+
+@router.get("/{encounter_id}/versions", response_model=list[NoteVersionDetail])
+async def list_note_versions(
+    encounter_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[NoteVersionDetail]:
+    """List an encounter's saved note versions, newest first, each with its codes.
+
+    Read-only history. Ownership-scoped exactly like generate/save: your encounter
+    or a 404. `note_versions` is append-only, so this is the audit trail of every
+    revision the provider approved.
+    """
+    encounter = await session.get(Encounter, encounter_id)
+    if encounter is None or encounter.provider_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found"
+        )
+
+    versions = (
+        await session.execute(
+            select(NoteVersion)
+            .where(NoteVersion.encounter_id == encounter_id)
+            .order_by(NoteVersion.version_number.desc())
+        )
+    ).scalars().all()
+
+    # Fetch all codes for these versions in one query, then group by version_id so
+    # we don't issue a query per version (N+1).
+    version_ids = [v.id for v in versions]
+    codes_by_version: dict[int, list[IcdCodeIn]] = {}
+    if version_ids:
+        code_rows = (
+            await session.execute(
+                select(NoteVersionIcdCode).where(
+                    NoteVersionIcdCode.note_version_id.in_(version_ids)
+                )
+            )
+        ).scalars().all()
+        for row in code_rows:
+            codes_by_version.setdefault(row.note_version_id, []).append(
+                IcdCodeIn(code=row.code, description=row.description)
+            )
+
+    return [
+        NoteVersionDetail(
+            id=v.id,
+            encounter_id=v.encounter_id,
+            version_number=v.version_number,
+            subjective=v.subjective,
+            objective=v.objective,
+            assessment=v.assessment,
+            plan=v.plan,
+            saved_at=v.saved_at,
+            icd_codes=codes_by_version.get(v.id, []),
+        )
+        for v in versions
+    ]
 
 
 @router.post(
@@ -239,6 +329,21 @@ async def save_note_version(
         saved_by=current_user.id,
     )
     session.add(version)
-    await session.commit()
+    await session.flush()  # assign version.id so the code rows can reference it
+
+    # 5. Persist the selected ICD codes as child rows (same transaction). De-dupe by
+    #    code so a double-selected code can't violate UNIQUE(version_id, code).
+    seen_codes: set[str] = set()
+    for c in body.icd_codes:
+        if c.code in seen_codes:
+            continue
+        seen_codes.add(c.code)
+        session.add(
+            NoteVersionIcdCode(
+                note_version_id=version.id, code=c.code, description=c.description
+            )
+        )
+
+    await session.commit()  # commits the version AND its codes atomically
     await session.refresh(version)
     return version
