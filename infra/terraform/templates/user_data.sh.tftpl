@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# First-boot provisioning for the Clinical Scribe web/app instance.
+#
+# Rendered by Terraform's templatefile(): the $${...}-free ${...} tokens below
+# (e.g. ${aws_region}, ${duckdns_subdomain}, ${secret_arn}) are substituted by
+# Terraform BEFORE this ever reaches the instance. Plain bash variables are
+# written as $VAR (no braces) so Terraform leaves them untouched.
+#
+# Flow:
+#   1. Point the DuckDNS subdomain at our Elastic IP (so DNS resolves before ACME)
+#   2. Install nginx, certbot, python, node, git, aws cli, psql client
+#   3. Clone the app; build the backend venv + the React SPA
+#   4. Pull the app-config secret via the instance's IAM role -> /etc/clinical-scribe.env
+#   5. Write the nginx site (SPA + SSE-safe API proxy) on :80
+#   6. Run certbot --nginx to obtain a REAL Let's Encrypt cert + add :80->:443 redirect
+#   7. systemd unit runs uvicorn on 127.0.0.1:8000 (Restart=always)
+#   8. Bootstrap the DB (CREATE EXTENSION vector; init_db.py; seed.py)
+#
+# Everything is logged to /var/log/user-data.log for debugging.
+# ===========================================================================
+
+set -o pipefail
+exec > >(tee -a /var/log/user-data.log) 2>&1
+echo "=== user-data started at $(date -u) ==="
+
+# --- Values injected by Terraform ------------------------------------------
+DOMAIN="${duckdns_subdomain}.duckdns.org"
+APP_DIR="/opt/clinical-scribe"
+ENV_FILE="/etc/clinical-scribe.env"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# 1. Point DuckDNS at our stable Elastic IP.
+#    Doing this FIRST gives DNS time to propagate before certbot's HTTP-01
+#    challenge, which requires the domain to already resolve to this box.
+# ---------------------------------------------------------------------------
+echo "--- updating DuckDNS ($DOMAIN -> ${duckdns_ip}) ---"
+for i in $(seq 1 5); do
+  RESP=$(curl -fsS "https://www.duckdns.org/update?domains=${duckdns_subdomain}&token=${duckdns_token}&ip=${duckdns_ip}" || true)
+  echo "DuckDNS response: $RESP"
+  if [ "$RESP" = "OK" ]; then break; fi
+  echo "DuckDNS update attempt $i not OK; retrying..."
+  sleep 5
+done
+
+# ---------------------------------------------------------------------------
+# 2. Base packages.
+# ---------------------------------------------------------------------------
+echo "--- apt install base packages ---"
+apt-get update -y
+apt-get install -y \
+  nginx \
+  certbot python3-certbot-nginx \
+  python3 python3-venv python3-pip \
+  git curl unzip jq \
+  postgresql-client
+
+# Node.js 20 from NodeSource (Ubuntu's apt node is too old for a modern Vite build).
+echo "--- install Node.js 20 ---"
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# AWS CLI v2 (Ubuntu's apt awscli is v1; v2 is the current, supported client).
+echo "--- install AWS CLI v2 ---"
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
+
+# ---------------------------------------------------------------------------
+# 3. Clone the application source.
+# ---------------------------------------------------------------------------
+echo "--- clone app from ${repo_url} ---"
+rm -rf "$APP_DIR"
+git clone "${repo_url}" "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# 4. Fetch the app-config secret via the IAM instance profile (NO static keys)
+#    and write it as a root-owned 0600 EnvironmentFile of KEY=VALUE lines.
+#    systemd reads this file as root before dropping to www-data, so the service
+#    user never needs read access to the secret itself.
+# ---------------------------------------------------------------------------
+echo "--- fetch secret -> $ENV_FILE ---"
+aws --region "${aws_region}" secretsmanager get-secret-value \
+  --secret-id "${secret_arn}" \
+  --query SecretString --output text > /tmp/app-config.json
+
+# JSON object -> KEY=VALUE lines (keys are already the env-var names).
+jq -r 'to_entries[] | "\(.key)=\(.value)"' /tmp/app-config.json > "$ENV_FILE"
+chown root:root "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+rm -f /tmp/app-config.json
+
+# ---------------------------------------------------------------------------
+# 5. Build the backend venv and the React SPA.
+# ---------------------------------------------------------------------------
+echo "--- python venv + deps ---"
+python3 -m venv "$APP_DIR/backend/.venv"
+"$APP_DIR/backend/.venv/bin/pip" install --upgrade pip
+"$APP_DIR/backend/.venv/bin/pip" install -r "$APP_DIR/backend/requirements.txt"
+
+echo "--- build frontend ---"
+cd "$APP_DIR/frontend"
+npm ci
+npm run build   # emits static assets to frontend/dist
+
+# The service runs as www-data; give it ownership of the app tree.
+chown -R www-data:www-data "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# 6. nginx site: SPA static files + SSE-SAFE reverse proxy to uvicorn.
+#
+#    The single regex `location` matches every backend route prefix
+#    (/auth /encounters /patients /icd /health /admin) and proxies them to
+#    uvicorn. Everything else falls through to the SPA with index.html fallback.
+#
+#    STREAMING IS CRITICAL: /encounters/{id}/generate streams SSE token-by-token.
+#    nginx buffers proxied responses by DEFAULT, which would hold tokens back and
+#    defeat progressive rendering. The proxy_* settings below turn buffering OFF
+#    and keep the upstream connection alive so tokens flush the instant FastAPI
+#    yields them. certbot (next step) only INJECTS the listen-443/ssl lines into
+#    this server block and adds a separate :80->:443 redirect server; it leaves
+#    these location blocks — and therefore these SSE settings — intact.
+# ---------------------------------------------------------------------------
+echo "--- write nginx site ---"
+rm -f /etc/nginx/sites-enabled/default
+
+cat > /etc/nginx/sites-available/clinical-scribe <<'NGINX'
+server {
+    listen 80;
+    server_name __DOMAIN__;
+
+    root /opt/clinical-scribe/frontend/dist;
+    index index.html;
+
+    # ---- Backend API + SSE streaming -> uvicorn on 127.0.0.1:8000 ----
+    location ~ ^/(auth|encounters|patients|icd|health|admin)(/|$) {
+        proxy_pass http://127.0.0.1:8000;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # --- SSE / streaming: DO NOT buffer, keep the stream flowing ---
+        proxy_http_version 1.1;          # keep-alive upstream (required for SSE)
+        proxy_set_header Connection "";   # clear "close" so the conn stays open
+        proxy_buffering off;              # flush tokens immediately, don't batch
+        proxy_cache off;                  # never cache a live stream
+        proxy_read_timeout 3600s;         # long generations shouldn't time out
+        chunked_transfer_encoding on;     # stream without a fixed Content-Length
+    }
+
+    # ---- React SPA: serve static assets, fall back to index.html ----
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+NGINX
+
+# Substitute the real domain (heredoc was quoted to protect nginx's own $vars).
+sed -i "s/__DOMAIN__/$DOMAIN/g" /etc/nginx/sites-available/clinical-scribe
+ln -sf /etc/nginx/sites-available/clinical-scribe /etc/nginx/sites-enabled/clinical-scribe
+
+nginx -t && systemctl reload nginx
+
+# ---------------------------------------------------------------------------
+# 7. systemd unit for uvicorn (FastAPI). Binds to 127.0.0.1 ONLY, so the app is
+#    never directly reachable on the public interface — nginx is the only front
+#    door. EnvironmentFile injects DATABASE_URL/JWT_SECRET/ANTHROPIC_API_KEY.
+#    Restart=always keeps it up across crashes/reboots.
+# ---------------------------------------------------------------------------
+echo "--- write systemd unit ---"
+cat > /etc/systemd/system/clinical-scribe.service <<'UNIT'
+[Unit]
+Description=Clinical Scribe FastAPI (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/clinical-scribe/backend
+EnvironmentFile=/etc/clinical-scribe.env
+ExecStart=/opt/clinical-scribe/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable clinical-scribe.service
+
+# ---------------------------------------------------------------------------
+# 8. Database bootstrap. RDS is already "available" by the time Terraform boots
+#    this instance, but we still wait/retry on the network path to be safe.
+#    Steps: enable pgvector, create tables (init_db.py), seed demo data (seed.py).
+#    All are idempotent, so re-running is harmless.
+# ---------------------------------------------------------------------------
+echo "--- database bootstrap ---"
+# Load the env so init_db.py/seed.py (which read DATABASE_URL) can connect.
+set -a
+. "$ENV_FILE"
+set +a
+
+# libpq-style URL for psql = the async URL minus the "+asyncpg" driver suffix.
+PG_URL=$(echo "$DATABASE_URL" | sed 's/+asyncpg//')
+
+echo "waiting for RDS to accept connections..."
+for i in $(seq 1 30); do
+  if pg_isready -d "$PG_URL" >/dev/null 2>&1; then
+    echo "RDS is ready"; break
+  fi
+  echo "RDS not ready (attempt $i); sleeping 5s"
+  sleep 5
+done
+
+# pgvector: the extension backing ICD-10 semantic search. On RDS the master user
+# is allowed to create it. If this fails, run it manually (see README).
+psql "$PG_URL" -c 'CREATE EXTENSION IF NOT EXISTS vector;' \
+  || echo "WARNING: CREATE EXTENSION vector failed; run it manually per the runbook."
+
+cd "$APP_DIR/backend"
+"$APP_DIR/backend/.venv/bin/python" init_db.py || echo "WARNING: init_db.py failed; re-run manually."
+"$APP_DIR/backend/.venv/bin/python" seed.py    || echo "WARNING: seed.py failed; re-run manually."
+
+# Start the API now that the schema exists.
+systemctl start clinical-scribe.service
+
+# ---------------------------------------------------------------------------
+# 9. Obtain the REAL Let's Encrypt certificate and let certbot rewrite the nginx
+#    site to add `listen 443 ssl` + the :80->:443 redirect. certbot installs a
+#    systemd timer (certbot.timer) that auto-renews the cert going forward.
+#
+#    Resilient: DNS may not have propagated yet, so retry with backoff. If every
+#    attempt fails we leave nginx serving on :80 and log a clear message; the
+#    operator can re-run the exact command from the README.
+# ---------------------------------------------------------------------------
+echo "--- obtain Let's Encrypt cert for $DOMAIN ---"
+CERTBOT_OK=0
+for i in $(seq 1 10); do
+  if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+       -m "${letsencrypt_email}" --redirect; then
+    echo "certbot succeeded on attempt $i"
+    CERTBOT_OK=1
+    break
+  fi
+  echo "certbot attempt $i failed (DNS may still be propagating); sleeping 30s"
+  sleep 30
+done
+
+if [ "$CERTBOT_OK" -ne 1 ]; then
+  echo "ERROR: certbot did not succeed. nginx is still serving HTTP on :80."
+  echo "Re-run once DNS resolves: certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m ${letsencrypt_email} --redirect"
+fi
+
+# Sanity check: confirm the SSE-critical settings survived certbot's rewrite.
+if grep -q "proxy_buffering off" /etc/nginx/sites-available/clinical-scribe; then
+  echo "OK: SSE proxy settings present in final nginx config."
+else
+  echo "WARNING: SSE proxy settings missing after certbot; inspect the nginx site file."
+fi
+
+systemctl reload nginx
+echo "=== user-data finished at $(date -u) ==="

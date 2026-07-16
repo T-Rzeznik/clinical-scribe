@@ -1,0 +1,12 @@
+# Never commit real variable values (they contain secrets: DuckDNS token,
+# Anthropic key, your IP).
+terraform.tfvars
+*.auto.tfvars
+
+# Terraform state can contain secrets in plaintext (the generated DB password,
+# JWT secret). Keep it out of git; use a remote backend (e.g. S3) for real teams.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log

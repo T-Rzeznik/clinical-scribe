@@ -1,0 +1,43 @@
+# terraform.tfvars.example
+# ---------------------------------------------------------------------------
+# Copy this file to `terraform.tfvars` and fill in the values below, then run
+# `terraform plan`. terraform.tfvars is gitignored (see infra/.gitignore) so your
+# secrets never get committed.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# The five REQUIRED values (no safe default exists) are marked REQUIRED. The rest
+# are optional overrides of the cost-optimized defaults in variables.tf.
+# ---------------------------------------------------------------------------
+
+# ---- REQUIRED --------------------------------------------------------------
+
+# Your public IP as a /32, so ONLY you can SSH. Find it at https://ifconfig.me
+# (Prefer SSM Session Manager instead — then this can be any placeholder /32.)
+ssh_ingress_cidr = "203.0.113.45/32"
+
+# Free DuckDNS subdomain (without .duckdns.org) + your DuckDNS token.
+# Sign up at https://www.duckdns.org, add a subdomain, copy the token shown up top.
+duckdns_subdomain = "clinicalscribe"
+duckdns_token     = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Contact email for Let's Encrypt (cert registration + expiry warnings).
+letsencrypt_email = "you@example.com"
+
+# Anthropic API key for SOAP-note generation. Stored in Secrets Manager, never
+# in the repo. (Technically has an empty default, but generation fails without it.)
+anthropic_api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# ---- Recommended to set ----------------------------------------------------
+
+# Public git URL the instance clones the app from at boot.
+repo_url = "https://github.com/YOUR_GITHUB_USERNAME/clinical-scribe.git"
+
+# ---- Optional overrides (defaults are fine for a demo) ---------------------
+
+# aws_region           = "us-east-1"
+# key_name             = ""              # name of an existing EC2 key pair for SSH
+# instance_type        = "t3.micro"
+# rds_instance_class   = "db.t4g.micro"
+# db_allocated_storage = 20
+# postgres_version     = "16"
