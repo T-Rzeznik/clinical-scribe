@@ -13,6 +13,17 @@ import {
   validateIcdCodes,
 } from "./api.js";
 
+// The template a fresh workspace (first login, new patient) defaults to. We match
+// the seeded "Standard SOAP Note" by name because that's the general-purpose
+// default; the provider can still switch to any other active template. Falls back
+// to the first template so the picker is never left unset if it's ever renamed or
+// absent.
+const DEFAULT_TEMPLATE_NAME = "Standard SOAP Note";
+function pickDefaultTemplateId(tpls) {
+  const standard = tpls.find((t) => t.name === DEFAULT_TEMPLATE_NAME);
+  return standard?.id ?? tpls[0]?.id ?? null;
+}
+
 // Pull the model's trailing "SUGGESTED_ICD_CODES: ..." line out of the streamed
 // note. Returns the raw code strings plus the note text with that line removed,
 // so the codes never leak into the editable SOAP fields.
@@ -136,7 +147,7 @@ export default function Workspace({ freshLogin = false }) {
       try {
         const tpls = await listTemplates();
         setTemplates(tpls);
-        setTemplateId((cur) => cur ?? tpls[0]?.id ?? null);
+        setTemplateId((cur) => cur ?? pickDefaultTemplateId(tpls));
       } catch {
         /* templates are optional; provider can still generate with the default */
       }
@@ -438,7 +449,7 @@ export default function Workspace({ freshLogin = false }) {
     setHistory([]);
     setOpenEncounterId(null);
     setHistoryVersions([]);
-    setTemplateId(templates[0]?.id ?? null);
+    setTemplateId(pickDefaultTemplateId(templates));
   }
 
   const canGenerate =
