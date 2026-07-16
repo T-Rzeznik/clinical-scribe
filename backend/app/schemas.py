@@ -7,7 +7,7 @@ DB shape and the wire shape can differ — e.g. we never expose `password_hash`.
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import EncounterStatus, Role
 
@@ -176,9 +176,16 @@ class NoteVersionRead(BaseModel):
 class NoteVersionDetail(NoteVersionRead):
     """A saved version plus the ICD codes attached to it — used when browsing
     history so the reader sees the full record, not just the SOAP text.
+
+    `saved_by_email`/`saved_by_name` identify the human who approved this version
+    (joined from `users` via note_versions.saved_by). Attribution matters in a
+    clinical trail: every immutable version says who stands behind it, not just
+    what it says. `saved_at` (from NoteVersionRead) is the "when".
     """
 
     icd_codes: list[IcdCodeIn] = []
+    saved_by_email: str
+    saved_by_name: str
 
 
 class EncounterSummary(BaseModel):
@@ -191,3 +198,173 @@ class EncounterSummary(BaseModel):
     status: EncounterStatus
     version_count: int
     latest_version_number: int | None
+
+
+# --- Draft persistence (cross-device draft restore) ---
+
+
+class EncounterTranscriptUpdate(BaseModel):
+    """Body for PATCH /encounters/{id} — autosave the working transcript.
+
+    Only the transcript is patchable here (identity/template are set at creation);
+    the encounter stays a draft. Sent repeatedly as the provider types so the draft
+    survives a browser refresh or a switch to another device — it lives in RDS, not
+    in the browser, which is the whole point of persisting it server-side.
+    """
+
+    transcript_text: str
+
+
+class EncounterTranscriptRead(BaseModel):
+    """Echo returned by PATCH /encounters/{id}: confirms exactly what was stored,
+    so the client can reconcile its optimistic local copy against the server.
+    """
+
+    id: int
+    transcript_text: str
+
+
+class DraftEncounterRead(BaseModel):
+    """The provider's resumable draft for GET /encounters/draft (or `null`).
+
+    Flattens encounter + patient identity (joined from `patients`) into one object
+    so the client can repopulate the entire 'start a visit' form in a single load,
+    without a second round-trip to resolve the patient's name/DOB from patient_id.
+    """
+
+    id: int
+    patient_id: int
+    patient_first_name: str
+    patient_last_name: str
+    patient_dob: date
+    transcript_text: str
+    template_id: int | None
+
+
+# --- Templates ---
+
+
+class TemplateOption(BaseModel):
+    """One selectable template for the provider's generate picker (GET /templates).
+
+    Deliberately tiny — the provider only needs to choose by name; the prompt body
+    is admin-facing detail they neither see nor edit.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+
+
+class TemplateRead(BaseModel):
+    """Full admin view of a template (GET/POST/PATCH /admin/templates)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    prompt_body: str
+    is_active: bool
+    created_by: int
+
+
+class TemplateCreate(BaseModel):
+    """Body for POST /admin/templates. `is_active` defaults true so a newly
+    authored template is immediately offered to providers unless withheld.
+    """
+
+    name: str
+    prompt_body: str
+    is_active: bool = True
+
+
+class TemplateUpdate(BaseModel):
+    """Body for PATCH /admin/templates/{id} — any subset of the editable fields.
+
+    Every field defaults to None (= 'not provided'); the handler uses
+    `model_dump(exclude_unset=True)` to touch ONLY the keys the caller actually
+    sent, so a PATCH that omits a field leaves it unchanged rather than nulling it.
+    """
+
+    name: str | None = None
+    prompt_body: str | None = None
+    is_active: bool | None = None
+
+
+class TemplateGenerateRequest(BaseModel):
+    """Body for POST /admin/templates/generate — the admin's short, plain-English
+    description of the encounter type they want a template for (e.g. "orthopedic
+    follow-up"). `min_length` blocks a trivially-empty prompt before we spend an
+    AI call; `max_length` keeps it a description, not a pasted essay.
+    """
+
+    description: str = Field(min_length=3, max_length=200)
+
+
+class TemplateGenerateResponse(BaseModel):
+    """What POST /admin/templates/generate returns: a DRAFT (nothing is persisted).
+
+    The admin reviews/edits these in the form and then Saves through the normal
+    audited POST /admin/templates — so the AI never writes to the DB directly.
+    """
+
+    name: str
+    prompt_body: str
+
+
+# --- Provider management (admin) ---
+
+
+class AdminUserCreate(BaseModel):
+    """Body for POST /admin/users — provision a provider or admin directly.
+
+    Unlike public signup (which forces role=provider so nobody self-promotes), this
+    is an admin-only surface, so it CAN set `role`. `full_name` is split into the
+    stored first/last columns by the handler.
+    """
+
+    email: str
+    full_name: str
+    password: str
+    role: Role
+
+
+class AdminUserActiveUpdate(BaseModel):
+    """Body for PATCH /admin/users/{id}/active — enable or disable a login."""
+
+    is_active: bool
+
+
+class AdminUserRead(BaseModel):
+    """Admin roster view of a user. Adds `is_active` and a composed `full_name`
+    (the DB keeps first/last split) and — like UserRead — NEVER exposes the hash.
+    """
+
+    id: int
+    email: str
+    full_name: str
+    role: Role
+    is_active: bool
+
+
+# --- Encounter oversight (admin) ---
+
+
+class AdminEncounterRead(BaseModel):
+    """One row of the cross-provider oversight table (GET /admin/encounters).
+
+    Admins see EVERY provider's encounters (no ownership filter), so each row
+    carries the owning provider's identity plus the patient identity and a
+    denormalized `version_count`, all resolved server-side in one query.
+    """
+
+    id: int
+    provider_email: str
+    provider_name: str
+    patient_first_name: str
+    patient_last_name: str
+    patient_dob: date
+    created_at: datetime
+    status: EncounterStatus
+    version_count: int

@@ -29,8 +29,11 @@ from app.models import (
 )
 from app.patient_history import get_patient_history
 from app.schemas import (
+    DraftEncounterRead,
     EncounterCreate,
     EncounterRead,
+    EncounterTranscriptRead,
+    EncounterTranscriptUpdate,
     IcdCodeIn,
     NoteVersionCreate,
     NoteVersionDetail,
@@ -113,6 +116,80 @@ async def create_encounter(
     await session.commit()  # commits BOTH the new patient (if any) and the encounter
     await session.refresh(encounter)  # reload so id/created_at are populated
     return encounter
+
+
+# NOTE: this route is declared BEFORE the "/{encounter_id}" paths below on purpose.
+# FastAPI matches routes top-to-bottom, so if "/{encounter_id}" came first the
+# literal word "draft" would be captured as an encounter_id and 422 on int parsing.
+@router.get("/draft", response_model=DraftEncounterRead | None)
+async def get_current_draft(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DraftEncounterRead | None:
+    """Return the requesting provider's most-recent UNSAVED draft, or JSON null.
+
+    "Unsaved draft" = an encounter of theirs with NO note_versions rows yet (they
+    started typing but never approved a note). This is what powers cross-device
+    resume: on load the client asks "do I have an open draft?" and gets back enough
+    to rebuild the whole form (patient identity is joined in so no second lookup).
+    """
+    # Correlated NOT EXISTS: true for encounters that have at least one saved
+    # version. We negate it (~) to keep only encounters with zero versions.
+    has_saved_version = (
+        select(NoteVersion.id)
+        .where(NoteVersion.encounter_id == Encounter.id)
+        .exists()
+    )
+    result = await session.execute(
+        select(Encounter, Patient)
+        .join(Patient, Patient.id == Encounter.patient_id)
+        .where(Encounter.provider_id == current_user.id)  # provider-scoped: only their own
+        .where(~has_saved_version)
+        .order_by(Encounter.created_at.desc())  # most recent draft wins
+        .limit(1)
+    )
+    row = result.first()
+    if row is None:
+        return None  # serializes to JSON `null` — the client's "no draft" signal
+
+    encounter, patient = row
+    return DraftEncounterRead(
+        id=encounter.id,
+        patient_id=encounter.patient_id,
+        patient_first_name=patient.first_name,
+        patient_last_name=patient.last_name,
+        patient_dob=patient.dob,
+        transcript_text=encounter.transcript_text or "",  # column is nullable; contract wants a string
+        template_id=encounter.template_id,
+    )
+
+
+@router.patch("/{encounter_id}", response_model=EncounterTranscriptRead)
+async def update_encounter_transcript(
+    encounter_id: int,
+    body: EncounterTranscriptUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> EncounterTranscriptRead:
+    """Autosave the working transcript onto an existing draft encounter.
+
+    Provider-scoped like every other encounter route: your encounter or a 404. We
+    update in place (status stays "draft") so the same encounter accumulates edits
+    instead of spawning a row per keystroke. Not audited — autosave fires constantly
+    and would drown the audit trail; the meaningful event (save_version) is logged.
+    """
+    encounter = await session.get(Encounter, encounter_id)
+    if encounter is None or encounter.provider_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found"
+        )
+
+    encounter.transcript_text = body.transcript_text
+    await session.commit()
+    await session.refresh(encounter)
+    return EncounterTranscriptRead(
+        id=encounter.id, transcript_text=encounter.transcript_text or ""
+    )
 
 
 async def _resolve_template_prompt(
@@ -247,13 +324,18 @@ async def list_note_versions(
             status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found"
         )
 
-    versions = (
+    # Join users so each version carries WHO approved it (email + name). saved_by is
+    # a required FK, so an inner join never drops a row. We select the three user
+    # columns alongside the ORM object rather than a nested User to keep the row flat.
+    rows = (
         await session.execute(
-            select(NoteVersion)
+            select(NoteVersion, User.email, User.first_name, User.last_name)
+            .join(User, User.id == NoteVersion.saved_by)
             .where(NoteVersion.encounter_id == encounter_id)
             .order_by(NoteVersion.version_number.desc())
         )
-    ).scalars().all()
+    ).all()
+    versions = [row[0] for row in rows]
 
     # Fetch all codes for these versions in one query, then group by version_id so
     # we don't issue a query per version (N+1).
@@ -283,8 +365,10 @@ async def list_note_versions(
             plan=v.plan,
             saved_at=v.saved_at,
             icd_codes=codes_by_version.get(v.id, []),
+            saved_by_email=email,
+            saved_by_name=f"{first_name} {last_name}".strip(),
         )
-        for v in versions
+        for v, email, first_name, last_name in rows
     ]
 
 

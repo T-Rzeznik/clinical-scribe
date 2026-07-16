@@ -21,6 +21,4 @@ client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 # The model is a deliberate architecture decision (see docs/architecture.md):
 # claude-sonnet-5 balances quality, latency, and cost for real-time streaming.
-# MODEL = "claude-sonnet-5"
-# Temporarily on Haiku 4.5 — cheaper/faster for local dev; swap back before ship.
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-5"

@@ -2,8 +2,11 @@ import { useState, useRef, useEffect } from "react";
 import {
   createEncounter,
   generateNote,
+  getDraft,
   listPatientEncounters,
+  listTemplates,
   listVersions,
+  patchEncounter,
   saveVersion,
   searchIcd,
   searchPatients,
@@ -59,7 +62,7 @@ function findHeaderStart(text, headerEnd) {
   return idx === -1 ? headerEnd : idx;
 }
 
-export default function Workspace() {
+export default function Workspace({ freshLogin = false }) {
   const [patient, setPatient] = useState({ first: "", last: "", dob: "" });
   const [transcript, setTranscript] = useState("");
 
@@ -74,6 +77,22 @@ export default function Workspace() {
   const [icdResults, setIcdResults] = useState([]);
   const [chosenCodes, setChosenCodes] = useState([]);
   const [aiSuggested, setAiSuggested] = useState([]); // codes the AI proposed (provenance)
+
+  // Note templates (which SOAP prompt the backend uses). Any provider can pick;
+  // admins author them. The chosen id rides along on createEncounter.
+  const [templates, setTemplates] = useState([]);
+  const [templateId, setTemplateId] = useState(null);
+
+  // Draft autosave: `draftSaved` is a subtle status line ("Saving…"/"Draft saved").
+  // `lastSaved` remembers the transcript we last persisted so we neither re-save a
+  // restored/unchanged draft nor fire redundant PATCHes.
+  const [draftSaved, setDraftSaved] = useState("");
+  const lastSaved = useRef("");
+  const autosaveTimer = useRef(null);
+
+  // A saved draft found on mount is held here UNAPPLIED so the workspace still
+  // opens blank by default; the provider opts in via the "Resume draft" banner.
+  const [pendingDraft, setPendingDraft] = useState(null);
 
   // Patient picker state. `patientQuery` is what's typed in the search box;
   // `patientMatches` are the provider's matching patients; `pickedPatient` is set
@@ -105,6 +124,116 @@ export default function Workspace() {
 
   function setP(field, value) {
     setPatient((p) => ({ ...p, [field]: value }));
+  }
+
+  // On mount: load the template list (default to the first) and look for this
+  // provider's most recent open draft. A plain REFRESH (freshLogin=false) restores
+  // it automatically so the patient you were on stays pulled up; a FRESH LOGIN
+  // (freshLogin=true) opens blank and only offers the draft via an opt-in banner.
+  // Both network calls are best-effort — a failure in one shouldn't break the page.
+  useEffect(() => {
+    (async () => {
+      try {
+        const tpls = await listTemplates();
+        setTemplates(tpls);
+        setTemplateId((cur) => cur ?? tpls[0]?.id ?? null);
+      } catch {
+        /* templates are optional; provider can still generate with the default */
+      }
+      try {
+        const draft = await getDraft();
+        // Only act if the draft has real content worth restoring.
+        if (draft && (draft.transcript_text?.trim() || draft.patient_first_name)) {
+          if (freshLogin) setPendingDraft(draft); // opt-in banner
+          else applyDraft(draft); // refresh → keep the person pulled up
+        }
+      } catch {
+        /* no draft / endpoint not ready — start with a blank workspace */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load a draft into the workspace (patient, transcript, template, encounter id).
+  function applyDraft(draft) {
+    if (!draft) return;
+    setPatient({
+      first: draft.patient_first_name || "",
+      last: draft.patient_last_name || "",
+      dob: draft.patient_dob || "",
+    });
+    setTranscript(draft.transcript_text || "");
+    setEncounterId(draft.id);
+    lastSaved.current = draft.transcript_text || ""; // don't re-save what we just restored
+    if (draft.template_id) setTemplateId(draft.template_id);
+    if (draft.patient_first_name) {
+      setPatientQuery(
+        `${draft.patient_first_name} ${draft.patient_last_name || ""}`.trim()
+      );
+    }
+  }
+
+  // Apply the stashed draft from the opt-in resume banner, then dismiss it.
+  function restoreDraft() {
+    applyDraft(pendingDraft);
+    setPendingDraft(null);
+  }
+
+  // Autosave the transcript as a draft. Once the patient identity is filled and
+  // there's transcript text, we debounce ~800ms after the last keystroke, then
+  // either create the encounter (first save) or PATCH the transcript onto it.
+  // `lastSaved` guards against re-persisting a restored/unchanged transcript.
+  useEffect(() => {
+    if (streaming) return; // don't mint a duplicate while a generation is in flight
+    if (!(patient.first && patient.last && patient.dob)) return;
+    if (!transcript.trim()) return;
+    if (transcript === lastSaved.current) return;
+
+    autosaveTimer.current = setTimeout(async () => {
+      try {
+        setDraftSaved("Saving…");
+        if (encounterId) {
+          await patchEncounter(encounterId, { transcript_text: transcript });
+        } else {
+          const enc = await createEncounter({
+            patient_first_name: patient.first,
+            patient_last_name: patient.last,
+            patient_dob: patient.dob,
+            transcript_text: transcript,
+            template_id: templateId,
+          });
+          setEncounterId(enc.id);
+        }
+        lastSaved.current = transcript;
+        setDraftSaved("Draft saved");
+      } catch {
+        setDraftSaved(""); // silent — autosave is a convenience, not the save button
+      }
+    }, 800);
+    return () => clearTimeout(autosaveTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript, patient.first, patient.last, patient.dob, streaming]);
+
+  // Guarantee we have an encounter id to generate/save against, flushing the
+  // latest transcript. Reuses the autosaved/restored draft so we never orphan it.
+  async function ensureEncounter() {
+    if (encounterId) {
+      if (transcript !== lastSaved.current) {
+        await patchEncounter(encounterId, { transcript_text: transcript });
+        lastSaved.current = transcript;
+      }
+      return encounterId;
+    }
+    const enc = await createEncounter({
+      patient_first_name: patient.first,
+      patient_last_name: patient.last,
+      patient_dob: patient.dob,
+      transcript_text: transcript,
+      template_id: templateId,
+    });
+    setEncounterId(enc.id);
+    lastSaved.current = transcript;
+    return enc.id;
   }
 
   // Debounced search as the provider types. We wait 250ms after the last keystroke
@@ -179,18 +308,13 @@ export default function Workspace() {
     setAiSuggested([]);
     setIcdResults([]);
     try {
-      // Start (or reuse) the encounter, then stream against it.
-      const enc = await createEncounter({
-        patient_first_name: patient.first,
-        patient_last_name: patient.last,
-        patient_dob: patient.dob,
-        transcript_text: transcript,
-      });
-      setEncounterId(enc.id);
+      // Reuse the autosaved/restored draft encounter (or create one), flushing the
+      // latest transcript, then stream against it.
+      const id = await ensureEncounter();
       setStreaming(true);
 
       let full = "";
-      await generateNote(enc.id, {
+      await generateNote(id, {
         onText: (chunk) => {
           full += chunk;
           setStreamed(full); // live-render each chunk as it arrives
@@ -264,6 +388,24 @@ export default function Workspace() {
     );
   }
 
+  // Clicking a search result: keep the code in the Selected tray (so it persists
+  // on save) AND, when a note is open, append it to the Assessment so the code is
+  // reflected in the narrative the provider edits. Removing (re-clicking a picked
+  // code) only toggles the tray — we don't rewrite the Assessment text they own.
+  function pickCode(row) {
+    const alreadyPicked = chosenCodes.some((c) => c.code === row.code);
+    toggleCode(row);
+    if (!alreadyPicked && soap) {
+      setSoap((s) => {
+        // Guard against appending the same code twice if they add/remove/re-add.
+        if (s.assessment && s.assessment.includes(`${row.code}:`)) return s;
+        const line = `- ${row.code}: ${row.description}`;
+        const assessment = s.assessment ? `${s.assessment}\n${line}` : line;
+        return { ...s, assessment };
+      });
+    }
+  }
+
   // Clear the whole workspace for the next patient (back-to-back appointments) —
   // no need to log out. Guards against silently discarding an unsaved note.
   function resetWorkspace() {
@@ -276,9 +418,12 @@ export default function Workspace() {
     ) {
       return;
     }
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    lastSaved.current = ""; // fresh start — nothing persisted for the next patient yet
+    setDraftSaved("");
     setPatient({ first: "", last: "", dob: "" });
     setTranscript("");
-    setEncounterId(null);
+    setEncounterId(null); // detach from the server draft so autosave starts a new one
     setStreamed("");
     setSoap(null);
     setSavedMsg("");
@@ -293,6 +438,7 @@ export default function Workspace() {
     setHistory([]);
     setOpenEncounterId(null);
     setHistoryVersions([]);
+    setTemplateId(templates[0]?.id ?? null);
   }
 
   const canGenerate =
@@ -313,6 +459,28 @@ export default function Workspace() {
             Clear / next patient
           </button>
         </div>
+
+        {/* Opt-in draft resume: the workspace opens blank, but if the server has
+            an unfinished draft we offer to load it instead of forcing it back. */}
+        {pendingDraft && (
+          <div className="draft-resume">
+            <span>
+              You have an unfinished draft
+              {pendingDraft.patient_first_name
+                ? ` for ${pendingDraft.patient_first_name} ${pendingDraft.patient_last_name || ""}`.trimEnd()
+                : ""}
+              .
+            </span>
+            <div className="draft-resume-actions">
+              <button className="link" onClick={restoreDraft}>
+                Resume draft
+              </button>
+              <button className="link" onClick={() => setPendingDraft(null)}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Patient picker: find an existing patient to avoid minting a duplicate
             (which would silently fragment their history), or start a new one. */}
@@ -373,6 +541,22 @@ export default function Workspace() {
             <input type="date" value={patient.dob} onChange={(e) => setP("dob", e.target.value)} />
           </label>
         </div>
+        {templates.length > 0 && (
+          <label>
+            Note template
+            <select
+              className="template-select"
+              value={templateId ?? ""}
+              onChange={(e) => setTemplateId(Number(e.target.value))}
+            >
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Encounter transcript / notes
           <textarea
@@ -382,9 +566,12 @@ export default function Workspace() {
             onChange={(e) => setTranscript(e.target.value)}
           />
         </label>
-        <button onClick={handleGenerate} disabled={!canGenerate || streaming}>
-          {streaming ? "Generating…" : "Generate SOAP note"}
-        </button>
+        <div className="generate-bar">
+          <button onClick={handleGenerate} disabled={!canGenerate || streaming}>
+            {streaming ? "Generating…" : "Generate SOAP note"}
+          </button>
+          {draftSaved && <span className="draft-status">{draftSaved}</span>}
+        </div>
         {!canGenerate && (
           <p className="hint">
             Fill patient fields and at least ~15 characters of transcript to generate.
@@ -426,17 +613,24 @@ export default function Workspace() {
                           <div className="hv-head">
                             <strong>Version {v.version_number}</strong>
                             <span className="hint">
+                              {v.saved_by_name ? `Saved by ${v.saved_by_name} • ` : ""}
                               {new Date(v.saved_at).toLocaleString()}
                             </span>
                           </div>
-                          {["subjective", "objective", "assessment", "plan"].map(
-                            (k) => (
-                              <p key={k} className="hv-field">
-                                <em>{k[0].toUpperCase() + k.slice(1)}:</em>{" "}
-                                {v[k]}
-                              </p>
-                            )
-                          )}
+                          <div className="hv-soap">
+                            {["subjective", "objective", "assessment", "plan"].map(
+                              (k) => (
+                                <div key={k} className="hv-field">
+                                  <span className="hv-label">
+                                    {k[0].toUpperCase() + k.slice(1)}
+                                  </span>
+                                  <p className="hv-value">
+                                    {v[k]?.trim() || "—"}
+                                  </p>
+                                </div>
+                              )
+                            )}
+                          </div>
                           {v.icd_codes.length > 0 && (
                             <p className="hv-codes">
                               ICD:{" "}
@@ -492,8 +686,11 @@ export default function Workspace() {
         </section>
       )}
 
-      {soap && (
-        <section className="card">
+      {/* Standalone ICD-10 widget — always available, even before a note is
+          generated, so a provider can look codes up at any point. Picks land in
+          the Selected tray (persisted on save) and, once a note is open, also
+          append to the Assessment. */}
+      <section className="card">
           <h2>ICD-10 codes</h2>
 
           {/* Selected tray — always visible so picks don't vanish behind a new
@@ -547,7 +744,7 @@ export default function Workspace() {
                 <li key={row.code}>
                   <button
                     className={picked ? "chip picked" : "chip"}
-                    onClick={() => toggleCode(row)}
+                    onClick={() => pickCode(row)}
                   >
                     <strong>{row.code}</strong> {row.description}
                     {picked && " ✓"}
@@ -560,12 +757,18 @@ export default function Workspace() {
             Fallback keyword search (pgvector semantic search wires in later).
           </p>
 
-          <div className="save-bar">
-            <button onClick={handleSave}>Save note version</button>
-            {savedMsg && <p className="saved">{savedMsg}</p>}
-          </div>
+          {/* You can only save a version once a note has been generated/parsed. */}
+          {soap ? (
+            <div className="save-bar">
+              <button onClick={handleSave}>Save note version</button>
+              {savedMsg && <p className="saved">{savedMsg}</p>}
+            </div>
+          ) : (
+            <p className="hint">
+              Generate a note to save these codes with a version.
+            </p>
+          )}
         </section>
-      )}
       </div>
     </div>
   );

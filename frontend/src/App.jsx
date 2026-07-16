@@ -11,12 +11,23 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(Boolean(getToken()));
   const [me, setMe] = useState(null); // current user (incl. role) for RBAC
   const [view, setView] = useState("workspace"); // "workspace" | "admin"
+  // True only when this session began with an actual login submit (not a reload
+  // that found a stored token). Lets Workspace start blank on a fresh login but
+  // restore the in-progress draft on a plain refresh. A reload resets App state,
+  // so this correctly falls back to false — the signal IS "did onSuccess fire".
+  const [freshLogin, setFreshLogin] = useState(false);
+
+  function handleLoginSuccess() {
+    setFreshLogin(true);
+    setLoggedIn(true);
+  }
 
   function handleLogout() {
     clearToken();
     setLoggedIn(false);
     setMe(null);
     setView("workspace");
+    setFreshLogin(false);
   }
 
   // Let api.js bounce us to the login screen when a token refresh fails (session
@@ -69,11 +80,11 @@ export default function App() {
         )}
       </header>
       {!loggedIn ? (
-        <Login onSuccess={() => setLoggedIn(true)} />
+        <Login onSuccess={handleLoginSuccess} />
       ) : showAdmin ? (
         <Admin me={me} />
       ) : (
-        <Workspace />
+        <Workspace freshLogin={freshLogin} />
       )}
     </div>
   );

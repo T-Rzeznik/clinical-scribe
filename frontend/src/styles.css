@@ -48,6 +48,26 @@ body {
   text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
 }
 .admin-table th { color: var(--muted); font-weight: 600; }
+/* Clickable sort headers + the per-column filter row. */
+.admin-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.admin-table th.sortable:hover { color: var(--ink); }
+.admin-table .sort-arrow { font-size: 0.72rem; color: var(--accent); }
+.admin-table .filter-row th { padding-top: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.admin-table .col-filter {
+  width: 100%; margin-top: 0; padding: 3px 6px;
+  font-size: 0.78rem; font-weight: 400; border-radius: 4px;
+}
+/* Cap tall tables (audit log, encounter list, roster) and let them scroll,
+   so one long list can't stretch the page. Both header rows stay pinned via
+   position: sticky — separate borders are required or sticky drops them. */
+.table-scroll {
+  max-height: 420px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.table-scroll .admin-table { border-collapse: separate; border-spacing: 0; }
+.table-scroll thead th { position: sticky; background: var(--card); z-index: 2; }
+.table-scroll thead tr:first-child th { top: 0; height: 34px; }
+.table-scroll thead tr.filter-row th { top: 34px; z-index: 1; }
 .role-tag, .action-tag {
   display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem;
   background: var(--bg); border: 1px solid var(--border);
@@ -88,6 +108,14 @@ body {
 .card h2 { margin-top: 0; font-size: 1.05rem; }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .card-head h2 { margin-bottom: 8px; }
+
+.draft-resume {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px; padding: 8px 12px;
+  background: #eff6ff; border: 1px solid var(--accent); border-radius: 8px;
+  font-size: 0.85rem; color: var(--ink);
+}
+.draft-resume-actions { display: flex; gap: 12px; flex-shrink: 0; }
 
 label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--muted); }
 input, textarea {
@@ -134,9 +162,18 @@ textarea { resize: vertical; }
 .history-versions { padding: 4px 12px 12px; border-top: 1px solid var(--border); }
 .history-version { padding: 8px 0; border-bottom: 1px dashed var(--border); }
 .history-version:last-child { border-bottom: none; }
-.hv-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
-.hv-field { margin: 2px 0; font-size: 0.9rem; }
-.hv-codes { margin: 6px 0 0; font-size: 0.88rem; font-weight: 600; color: var(--accent); }
+.hv-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+/* Prior-note SOAP as four clearly-labeled, scannable sections (not a wall of
+   text): a small caps accent label above each section, the value below it with
+   line breaks preserved so multi-line notes keep their structure. */
+.hv-soap { display: flex; flex-direction: column; gap: 8px; }
+.hv-field { display: flex; flex-direction: column; }
+.hv-label {
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--accent); margin-bottom: 1px;
+}
+.hv-value { margin: 0; font-size: 0.9rem; line-height: 1.45; white-space: pre-wrap; }
+.hv-codes { margin: 8px 0 0; font-size: 0.88rem; font-weight: 600; color: var(--accent); }
 
 button {
   font: inherit;
@@ -218,3 +255,39 @@ button.link {
 .hint { color: var(--muted); font-size: 0.8rem; }
 .error { color: var(--error); font-weight: 500; }
 .saved, .chosen { color: var(--ok); font-weight: 500; }
+
+/* Template picker + draft autosave affordances */
+.template-select { cursor: pointer; }
+.generate-bar { display: flex; align-items: center; gap: 12px; }
+.draft-status { color: var(--ok); font-size: 0.8rem; font-weight: 500; }
+
+/* Admin: forms + toggles for template/user/encounter management */
+.admin-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+.admin-form label { margin-bottom: 0; flex: 1 1 160px; }
+.admin-form .full { flex: 1 1 100%; }
+.admin-form button { white-space: nowrap; }
+
+/* AI template generator: a description input + Generate button, set off from the
+   manual create form below it. */
+.ai-gen {
+  margin-bottom: 14px; padding: 12px; border-radius: 8px;
+  background: var(--bg); border: 1px dashed var(--border);
+}
+.ai-gen label { margin-bottom: 0; }
+.ai-gen-row { display: flex; gap: 8px; align-items: stretch; }
+.ai-gen-row input { flex: 1 1 auto; }
+.ai-gen-row button { white-space: nowrap; }
+.ai-gen .hint { margin: 8px 0 0; }
+.filter-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+.filter-bar label { margin-bottom: 0; }
+.active-toggle {
+  background: none; border: 1px solid var(--border); color: var(--ink);
+  border-radius: 999px; padding: 3px 10px; font-size: 0.78rem; font-weight: 600;
+}
+.active-toggle.on { border-color: var(--ok); color: var(--ok); }
+.active-toggle.off { border-color: var(--error); color: var(--error); }
+.active-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+.tpl-body { font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; min-height: 90px; }
+.tpl-actions { display: flex; gap: 8px; }
+.tpl-actions .danger { background: var(--error); }
+.tpl-actions .ghost { background: none; color: var(--accent); border: 1px solid var(--border); }
