@@ -18,3 +18,7 @@ PyJWT
 
 # Anthropic SDK — SOAP note generation (async client, streaming)
 anthropic
+
+# Semantic ICD-10 search: local ONNX MiniLM embeddings (no PyTorch, no query-time
+# external API) + in-memory cosine. Pulls in numpy + onnxruntime.
+fastembed

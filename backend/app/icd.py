@@ -1,20 +1,28 @@
-"""ICD-10 code search — in-memory keyword fallback (pre-pgvector).
+"""ICD-10 code search — in-memory semantic search (cosine over local embeddings).
 
-The architecture calls for semantic search via pgvector: embed ~200-300 codes,
-embed the query, `ORDER BY embedding <=> query`. pgvector has no official Windows
-binary and isn't installed on the local Postgres yet, so this module is the
-documented FALLBACK: a curated in-memory catalog scored by keyword overlap.
+The architecture calls for *semantic* search: match on meaning, not spelling, so
+"heart attack" finds "Acute myocardial infarction". The canonical design does this
+in pgvector (a VECTOR column + `ORDER BY embedding <=> query`); pgvector has no
+official Windows binary locally, so `semantic_search.py` does the identical math
+in-process — embed the catalog once, rank by cosine similarity — with the SAME
+`search(query, limit)` shape a pgvector backend would expose (drop-in swap for prod).
 
-The public shape (a `search(query, limit)` returning ranked `{code, description}`)
-is deliberately the same one a pgvector-backed version would expose, so swapping
-the implementation later is a drop-in — the route and frontend don't change.
+The keyword scorer below is kept as a graceful FALLBACK: if the embedding model
+can't load (e.g. offline before the weights are cached), search still works on
+literal word overlap instead of erroring.
 """
+
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
+from app import semantic_search
 from app.deps import get_current_user
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/icd", tags=["icd"])
 
@@ -378,14 +386,12 @@ def validate_codes(codes: list[str]) -> list[dict]:
     return valid
 
 
-def search(query: str, limit: int = 5) -> list[dict]:
-    """Rank catalog codes by keyword overlap with the query.
+def _keyword_search(query: str, limit: int = 5) -> list[dict]:
+    """Rank catalog codes by literal keyword overlap — the FALLBACK scorer.
 
-    Scoring is deliberately simple (this is the fallback): +2 for each query token
-    that appears as a whole word in the description, +1 for a substring match
-    anywhere in the description. Codes with zero signal are dropped. A pgvector
-    version would replace this with cosine distance over embeddings — same return
-    shape, so callers don't change.
+    Used only when semantic search is unavailable. Scoring is deliberately simple:
+    +2 for each query token that appears as a whole word in the description, +1 for
+    a substring match anywhere in it. Codes with zero signal are dropped.
     """
     q = query.lower().strip()
     if not q:
@@ -404,6 +410,24 @@ def search(query: str, limit: int = 5) -> list[dict]:
     return [row for _score, row in scored[:limit]]
 
 
+def search(query: str, limit: int = 5) -> list[dict]:
+    """Semantic ICD-10 search, with a keyword fallback if the model is unavailable.
+
+    Tries cosine similarity over embeddings (`semantic_search`). If that raises —
+    the weights can't be downloaded/loaded on a cold offline start — we degrade to
+    literal keyword matching instead of failing the request. An empty semantic
+    result is NOT a failure (it means nothing cleared the relevance floor), so we
+    return it as-is rather than resurrecting weak keyword hits.
+    """
+    if not query.strip():
+        return []
+    try:
+        return semantic_search.search(query, ICD10_CATALOG, limit)
+    except Exception as exc:  # model download/load failure -> stay useful
+        logger.warning("semantic ICD search unavailable (%s); using keyword fallback", exc)
+        return _keyword_search(query, limit)
+
+
 @router.get("/search")
 async def search_icd(
     q: str = Query(..., min_length=1, description="Free-text symptom or diagnosis"),
@@ -412,9 +436,13 @@ async def search_icd(
 ) -> dict:
     """Suggest ICD-10 codes for a free-text query (authed).
 
-    Returns `{"results": [{code, description}, ...]}`, highest-ranked first.
+    Returns `{"results": [{code, description, score}, ...]}`, highest-ranked first.
+    `search` embeds the query and does numpy math (CPU-bound, and the first call
+    also loads the model), so we run it in a threadpool to avoid blocking the async
+    event loop — the same reason our DB and Anthropic calls are async.
     """
-    return {"results": search(q, limit)}
+    results = await run_in_threadpool(search, q, limit)
+    return {"results": results}
 
 
 class ValidateRequest(BaseModel):
