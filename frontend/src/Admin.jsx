@@ -13,6 +13,7 @@ import {
   adminGenerateTemplate,
   adminEncounters,
 } from "./api.js";
+import { timeAgo, exactWhen } from "./time.js";
 
 // ---------------------------------------------------------------------------
 // Small, reusable client-side sort + per-column filter for the admin tables.
@@ -130,6 +131,9 @@ export default function Admin({ me }) {
   const [templates, setTemplates] = useState([]);
   const [encounters, setEncounters] = useState([]);
   const [error, setError] = useState("");
+  // True until the initial Promise.all settles, so we show one loading card
+  // instead of flashing empty stat cards + empty tables before data arrives.
+  const [loading, setLoading] = useState(true);
 
   // Add-user form.
   const [newUser, setNewUser] = useState({
@@ -336,6 +340,10 @@ export default function Admin({ me }) {
         setEncounters(enc);
       } catch (err) {
         setError(err.message);
+      } finally {
+        // Clear the loading gate whether the load succeeded or failed — on
+        // error we fall through to the normal render, which shows the error.
+        setLoading(false);
       }
     })();
   }, []);
@@ -350,6 +358,20 @@ export default function Admin({ me }) {
         { label: "Note versions", value: stats.note_versions },
       ]
     : [];
+
+  // While the initial load is in flight, show a single loading card rather than
+  // the full (empty) dashboard. If it errored, `loading` is already false, so we
+  // fall through to the real render below and surface the error line there.
+  if (loading) {
+    return (
+      <div className="admin dash-loading">
+        {error && <p className="error">{error}</p>}
+        <section className="card">
+          <p className="hint">Loading dashboard…</p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="admin">
@@ -640,7 +662,7 @@ export default function Admin({ me }) {
                   {enc.patient_first_name} {enc.patient_last_name}
                 </td>
                 <td>{enc.patient_dob}</td>
-                <td>{new Date(enc.created_at).toLocaleString()}</td>
+                <td title={exactWhen(enc.created_at)}>{timeAgo(enc.created_at)}</td>
                 <td>
                   <span className="action-tag">{enc.status}</span>
                 </td>
@@ -668,7 +690,7 @@ export default function Admin({ me }) {
           <tbody>
             {auditView.view.map((e) => (
               <tr key={e.id}>
-                <td>{new Date(e.created_at).toLocaleString()}</td>
+                <td title={exactWhen(e.created_at)}>{timeAgo(e.created_at)}</td>
                 <td>{e.actor_email || "—"}</td>
                 <td>
                   <span className="action-tag">{e.action}</span>

@@ -289,6 +289,9 @@ async def generate_note(
                 if event["type"] == "reset":
                     # A tool-use turn's narration — tell the client to discard it.
                     yield f"data: {json.dumps({'reset': True})}\n\n"
+                elif event["type"] == "history_used":
+                    # Real prior history was injected — let the UI badge it honestly.
+                    yield f"data: {json.dumps({'history_used': True})}\n\n"
                 else:
                     yield f"data: {json.dumps({'text': event['text']})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"  # signal clean completion

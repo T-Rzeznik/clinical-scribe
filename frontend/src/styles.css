@@ -254,7 +254,63 @@ button.link {
 
 .hint { color: var(--muted); font-size: 0.8rem; }
 .error { color: var(--error); font-weight: 500; }
-.saved, .chosen { color: var(--ok); font-weight: 500; }
+/* Save confirmations fade in like a toast (they auto-dismiss from JS after a few
+   seconds), so the feedback feels alive rather than a static line that lingers. */
+.saved, .chosen { color: var(--ok); font-weight: 500; animation: toast-in 0.18s ease-out; }
+.draft-status { animation: toast-in 0.18s ease-out; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Review-card header badges: proof-of-context ("Prior history referenced") and an
+   unsaved-edits marker, plus the Print action, all sitting opposite the title. */
+.review-badges { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.badge {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-size: 0.75rem; font-weight: 600; white-space: nowrap;
+}
+.badge.history { background: #ecfdf5; color: var(--ok); border: 1px solid var(--ok); }
+.badge.unsaved { background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
+
+/* ICD result chips: description on the left (flex-grows), a muted semantic-match
+   score and the picked check pinned to the right. */
+.chip { display: flex; align-items: center; gap: 8px; }
+.chip-text { flex: 1 1 auto; min-width: 0; }
+.chip-score {
+  flex-shrink: 0; font-size: 0.72rem; font-weight: 700; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 7px;
+}
+.chip.picked .chip-score { color: #fff; background: rgba(255,255,255,0.2); border-color: transparent; }
+.chip-check { flex-shrink: 0; font-weight: 700; }
+
+/* Admin dashboard while the initial data loads — center the placeholder message. */
+.dash-loading .card { text-align: center; padding: 40px 20px; }
+
+/* Print-only clinical note: hidden on screen, and in print we blank everything
+   else (visibility, so layout is preserved) and float only this block to the top. */
+.print-note { display: none; }
+@media print {
+  body * { visibility: hidden; }
+  .print-note, .print-note * { visibility: visible; }
+  .print-note {
+    display: block; position: absolute; left: 0; top: 0; width: 100%;
+    padding: 0 8px; color: #000;
+  }
+  .print-note h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  .print-note .print-meta {
+    font-size: 0.9rem; margin-bottom: 16px; padding-bottom: 10px;
+    border-bottom: 1px solid #000; display: flex; flex-direction: column; gap: 2px;
+  }
+  .print-note .print-section { margin-bottom: 14px; break-inside: avoid; }
+  .print-note .print-section h2 {
+    font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em;
+    margin: 0 0 3px; border-bottom: 1px solid #999; padding-bottom: 2px;
+  }
+  .print-note .print-section p { margin: 0; white-space: pre-wrap; line-height: 1.4; }
+  .print-note ul { margin: 4px 0 0; padding-left: 20px; }
+}
 
 /* Template picker + draft autosave affordances */
 .template-select { cursor: pointer; }

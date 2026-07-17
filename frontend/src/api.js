@@ -339,7 +339,7 @@ export async function searchIcd(query) {
 // chunk, onDone on clean completion, onError on a mid-stream error event.
 export async function generateNote(
   encounterId,
-  { onText, onReset, onDone, onError }
+  { onText, onReset, onDone, onError, onHistoryUsed }
 ) {
   const res = await authedFetch(`${BASE}/encounters/${encounterId}/generate`, {
     method: "POST",
@@ -377,6 +377,7 @@ export async function generateNote(
       const payload = JSON.parse(line.slice(line.indexOf(":") + 1).trim());
       if (payload.text !== undefined) onText(payload.text);
       else if (payload.reset) onReset && onReset();
+      else if (payload.history_used) onHistoryUsed && onHistoryUsed();
       else if (payload.done) onDone();
       else if (payload.error) onError(payload.error);
     }

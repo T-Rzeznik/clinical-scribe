@@ -39,6 +39,11 @@ PATIENT_HISTORY_TOOL = {
 # text result. The route supplies this as a closure over the DB session + scope.
 ToolExecutor = Callable[[str, dict], Awaitable[str]]
 
+# Sentinel substring get_patient_history returns when the patient has NO prior
+# notes. We key on it (case-insensitively) to tell "real history was injected"
+# apart from "first-timer, nothing to inject" — so the UI only badges the former.
+NO_HISTORY_MARKER = "no prior encounters"
+
 
 async def stream_soap_note(
     system_prompt: str,
@@ -52,13 +57,19 @@ async def stream_soap_note(
     (`stop_reason == "tool_use"`), we run the tool via `tool_executor`, append the
     result to the conversation, and loop for another turn. Otherwise we're done.
 
-    Events are dicts: {"type": "text", "text": ...} for note text, or
-    {"type": "reset"} emitted when a tool-use turn ends. A tool-use turn often
-    contains conversational narration ("I'll look up the prior notes…") that is
-    NOT part of the note; the reset tells the consumer to discard whatever it has
-    shown so far, so only the FINAL answer turn ends up as the note.
+    Events are dicts: {"type": "text", "text": ...} for note text,
+    {"type": "reset"} emitted when a tool-use turn ends, or
+    {"type": "history_used"} emitted once if get_patient_history actually returned
+    real prior notes (so the UI can honestly badge "Prior history referenced").
+    A tool-use turn often contains conversational narration ("I'll look up the
+    prior notes…") that is NOT part of the note; the reset tells the consumer to
+    discard whatever it has shown so far, so only the FINAL answer turn ends up as
+    the note.
     """
     messages: list[dict] = [{"role": "user", "content": transcript}]
+
+    # Emit history_used at most once, even if the model calls the tool twice.
+    history_signaled = False
 
     while True:
         async with client.messages.stream(
@@ -91,6 +102,15 @@ async def stream_soap_note(
         for block in final.content:
             if block.type == "tool_use":
                 output = await tool_executor(block.name, block.input)
+                # Signal (once) that REAL prior history was pulled in — only when
+                # this is the history tool AND the result isn't the "none" sentinel.
+                if (
+                    not history_signaled
+                    and block.name == "get_patient_history"
+                    and NO_HISTORY_MARKER not in output.lower()
+                ):
+                    history_signaled = True
+                    yield {"type": "history_used"}
                 tool_results.append(
                     {
                         "type": "tool_result",

@@ -12,6 +12,7 @@ import {
   searchPatients,
   validateIcdCodes,
 } from "./api.js";
+import { timeAgo, exactWhen } from "./time.js";
 
 // The template a fresh workspace (first login, new patient) defaults to. We match
 // the seeded "Standard SOAP Note" by name because that's the general-purpose
@@ -83,6 +84,14 @@ export default function Workspace({ freshLogin = false }) {
   const [soap, setSoap] = useState(null); // {subjective, objective, assessment, plan}
   const [savedMsg, setSavedMsg] = useState("");
   const [error, setError] = useState("");
+  // True once the provider edits a SOAP field after a save (or before the first
+  // save) — so the "Saved as version N" note never lingers as a lie while there
+  // are unsaved edits, and we can show an "Unsaved changes" marker instead.
+  const [dirty, setDirty] = useState(false);
+  // Set when the generation actually pulled in this patient's PRIOR history via
+  // the backend get_patient_history tool — drives a visible "Prior history
+  // referenced" badge (proof the returning-patient context injection fired).
+  const [historyUsed, setHistoryUsed] = useState(false);
 
   const [icdQuery, setIcdQuery] = useState("");
   const [icdResults, setIcdResults] = useState([]);
@@ -113,6 +122,7 @@ export default function Workspace({ freshLogin = false }) {
   const [pickedPatient, setPickedPatient] = useState(null);
   const searchTimer = useRef(null);
   const pickerRef = useRef(null);
+  const icdRef = useRef(null); // wraps the ICD search box + results for click-out
 
   // Close the patient dropdown when the user clicks anywhere outside the picker,
   // so the suggestions never sit over the fields below. A click ON a match is
@@ -121,6 +131,20 @@ export default function Workspace({ freshLogin = false }) {
     function onDocMouseDown(e) {
       if (pickerRef.current && !pickerRef.current.contains(e.target)) {
         setPatientMatches([]);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
+
+  // Same treatment for the ICD search results: they're a transient dropdown off
+  // the search box, so a click anywhere outside the search+results area dismisses
+  // them. The Selected tray lives outside this ref, so it (and its picks) persist.
+  // A click ON a result is inside icdRef, so pickCode still registers first.
+  useEffect(() => {
+    function onDocMouseDown(e) {
+      if (icdRef.current && !icdRef.current.contains(e.target)) {
+        setIcdResults([]);
       }
     }
     document.addEventListener("mousedown", onDocMouseDown);
@@ -136,6 +160,24 @@ export default function Workspace({ freshLogin = false }) {
   function setP(field, value) {
     setPatient((p) => ({ ...p, [field]: value }));
   }
+
+  // Toast auto-dismiss: a "Saved as version N" confirmation is transient feedback,
+  // not permanent state, so fade it after ~4s. (Editing a field also clears it via
+  // the dirty path.) Re-runs whenever savedMsg changes, clearing the prior timer.
+  useEffect(() => {
+    if (!savedMsg) return;
+    const t = setTimeout(() => setSavedMsg(""), 4000);
+    return () => clearTimeout(t);
+  }, [savedMsg]);
+
+  // Same for the "Draft saved" autosave chip — dismiss the settled state after a
+  // moment. We only auto-clear the terminal "Draft saved"; the transient "Saving…"
+  // is left to be replaced by the next status so it doesn't flicker mid-save.
+  useEffect(() => {
+    if (draftSaved !== "Draft saved") return;
+    const t = setTimeout(() => setDraftSaved(""), 2500);
+    return () => clearTimeout(t);
+  }, [draftSaved]);
 
   // On mount: load the template list (default to the first) and look for this
   // provider's most recent open draft. A plain REFRESH (freshLogin=false) restores
@@ -318,6 +360,8 @@ export default function Workspace({ freshLogin = false }) {
     setChosenCodes([]); // fresh encounter → clear any prior selection
     setAiSuggested([]);
     setIcdResults([]);
+    setHistoryUsed(false); // clear last run's badge until this run proves otherwise
+    setDirty(false);
     try {
       // Reuse the autosaved/restored draft encounter (or create one), flushing the
       // latest transcript, then stream against it.
@@ -335,6 +379,12 @@ export default function Workspace({ freshLogin = false }) {
           // that so only the real note remains once it streams next.
           full = "";
           setStreamed("");
+        },
+        onHistoryUsed: () => {
+          // The backend get_patient_history tool returned REAL prior notes and fed
+          // them into this generation — surface that as a badge so the returning-
+          // patient context injection is visible, not silent.
+          setHistoryUsed(true);
         },
         onDone: async () => {
           setStreaming(false);
@@ -373,6 +423,7 @@ export default function Workspace({ freshLogin = false }) {
         ? ` with ${chosenCodes.length} ICD code${chosenCodes.length > 1 ? "s" : ""}`
         : "";
       setSavedMsg(`Saved as version ${v.version_number}${codeNote}.`);
+      setDirty(false); // this exact note is now persisted — no unsaved edits
     } catch (err) {
       // api.js already tried to refresh + retry on a 401, and bounced to login
       // if the refresh itself failed. So anything reaching here is a genuine
@@ -604,8 +655,8 @@ export default function Workspace({ freshLogin = false }) {
                   className="history-head"
                   onClick={() => toggleEncounterHistory(enc.id)}
                 >
-                  <span>
-                    {new Date(enc.created_at).toLocaleString()} ·{" "}
+                  <span title={exactWhen(enc.created_at)}>
+                    {timeAgo(enc.created_at)} ·{" "}
                     {enc.version_count > 0 ? "Saved" : "Draft (no note)"}
                   </span>
                   <span className="hint">
@@ -623,9 +674,9 @@ export default function Workspace({ freshLogin = false }) {
                         <div key={v.id} className="history-version">
                           <div className="hv-head">
                             <strong>Version {v.version_number}</strong>
-                            <span className="hint">
+                            <span className="hint" title={exactWhen(v.saved_at)}>
                               {v.saved_by_name ? `Saved by ${v.saved_by_name} • ` : ""}
-                              {new Date(v.saved_at).toLocaleString()}
+                              {timeAgo(v.saved_at)}
                             </span>
                           </div>
                           <div className="hv-soap">
@@ -678,7 +729,27 @@ export default function Workspace({ freshLogin = false }) {
 
       {soap && (
         <section className="card">
-          <h2>Review &amp; edit</h2>
+          <div className="card-head">
+            <h2>Review &amp; edit</h2>
+            <div className="review-badges">
+              {historyUsed && (
+                <span
+                  className="badge history"
+                  title="This note was generated with the patient's prior encounter history injected via the backend get_patient_history tool"
+                >
+                  ✓ Prior history referenced
+                </span>
+              )}
+              {dirty && <span className="badge unsaved">Unsaved changes</span>}
+              <button
+                className="link"
+                onClick={() => window.print()}
+                title="Print or save this note as a PDF"
+              >
+                Print
+              </button>
+            </div>
+          </div>
           <p className="hint">
             Edit each section so it reflects what you stand behind, then save.
           </p>
@@ -689,10 +760,56 @@ export default function Workspace({ freshLogin = false }) {
                 <textarea
                   rows={4}
                   value={soap[key]}
-                  onChange={(e) => setSoap((s) => ({ ...s, [key]: e.target.value }))}
+                  onChange={(e) => {
+                    setSoap((s) => ({ ...s, [key]: e.target.value }));
+                    // Editing invalidates any "Saved as version N" confirmation and
+                    // flags the note as having unsaved changes.
+                    if (savedMsg) setSavedMsg("");
+                    setDirty(true);
+                  }}
                 />
               </label>
             ))}
+          </div>
+
+          {/* Print-only rendering of the finalized note. Textareas print as ugly
+              boxes, so for print/PDF we emit a clean clinical document: patient
+              header, the four SOAP sections, and the selected ICD codes. Hidden on
+              screen; the @media print stylesheet hides everything else and shows
+              only this block. */}
+          <div className="print-note" aria-hidden="true">
+            <h1>Clinical Note — SOAP</h1>
+            <div className="print-meta">
+              <div>
+                <strong>Patient:</strong> {patient.first} {patient.last}
+                {patient.dob ? ` (DOB ${patient.dob})` : ""}
+              </div>
+              <div>
+                <strong>Template:</strong>{" "}
+                {templates.find((t) => t.id === templateId)?.name || "Standard SOAP Note"}
+              </div>
+              <div>
+                <strong>Printed:</strong> {exactWhen(new Date())}
+              </div>
+            </div>
+            {["subjective", "objective", "assessment", "plan"].map((key) => (
+              <div key={key} className="print-section">
+                <h2>{key[0].toUpperCase() + key.slice(1)}</h2>
+                <p>{soap[key]?.trim() || "—"}</p>
+              </div>
+            ))}
+            {chosenCodes.length > 0 && (
+              <div className="print-section">
+                <h2>ICD-10 Codes</h2>
+                <ul>
+                  {chosenCodes.map((c) => (
+                    <li key={c.code}>
+                      <strong>{c.code}</strong> — {c.description}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -740,6 +857,7 @@ export default function Workspace({ freshLogin = false }) {
             )}
           </div>
 
+          <div className="icd-search-wrap" ref={icdRef}>
           <form className="icd-search" onSubmit={handleIcdSearch}>
             <input
               placeholder="Search a symptom or diagnosis (e.g. chest pain)"
@@ -757,16 +875,27 @@ export default function Workspace({ freshLogin = false }) {
                     className={picked ? "chip picked" : "chip"}
                     onClick={() => pickCode(row)}
                   >
-                    <strong>{row.code}</strong> {row.description}
-                    {picked && " ✓"}
+                    <span className="chip-text">
+                      <strong>{row.code}</strong> {row.description}
+                    </span>
+                    {/* Semantic cosine similarity (0–1) from the embedding search,
+                        surfaced as a match % so the ranking is transparent. */}
+                    {typeof row.score === "number" && (
+                      <span className="chip-score" title="Semantic match confidence">
+                        {Math.round(row.score * 100)}%
+                      </span>
+                    )}
+                    {picked && <span className="chip-check">✓</span>}
                   </button>
                 </li>
               );
             })}
           </ul>
           <p className="hint">
-            Fallback keyword search (pgvector semantic search wires in later).
+            Semantic search — matches on meaning, not spelling (e.g. “heart attack”
+            finds “Acute myocardial infarction”).
           </p>
+          </div>
 
           {/* You can only save a version once a note has been generated/parsed. */}
           {soap ? (
