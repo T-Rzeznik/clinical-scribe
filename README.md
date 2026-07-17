@@ -7,7 +7,7 @@ writes it up as a proper clinical note, live on the screen, and even suggests th
 billing codes that go with it. The doctor reviews, tweaks, and saves.
 
 <p>
-  <img alt="Status" src="https://img.shields.io/badge/status-feature--complete-brightgreen">
+  <img alt="Status" src="https://img.shields.io/badge/status-deployed%20%26%20verified-brightgreen">
   <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React-61DAFB?logo=react&logoColor=black">
   <img alt="Database" src="https://img.shields.io/badge/database-PostgreSQL-4169E1?logo=postgresql&logoColor=white">
@@ -18,6 +18,11 @@ billing codes that go with it. The doctor reviews, tweaks, and saves.
 
 > **Tags:** `healthcare` · `clinical-documentation` · `soap-notes` · `icd-10` · `generative-ai`
 > · `llm` · `fastapi` · `react` · `postgresql` · `aws` · `full-stack`
+
+> 🌐 **Live demo:** **https://trz-clinical-scribe.duckdns.org** — deployed on AWS via Terraform
+> (EC2 + private RDS + nginx + a real Let's Encrypt certificate) and verified end-to-end. To
+> avoid idle cloud costs the instance is spun up on demand and torn down between sessions
+> (`terraform apply` / `terraform destroy`); the URL is stable across re-deploys.
 
 ---
 
@@ -85,10 +90,11 @@ database.
 |---|---|---|
 | **Frontend** | React + Vite | Fast, modern web UI; streams the note in live |
 | **Backend** | FastAPI (Python) | Async API server, great for streaming responses |
-| **Database** | PostgreSQL (+ pgvector) | Reliable storage; vector search for ICD codes |
+| **Database** | PostgreSQL (AWS RDS, private) | Reliable, normalized storage; append-only note history |
+| **ICD search** | Local MiniLM embeddings (`fastembed`, in-process cosine) | Semantic match on meaning, not keywords; no external API (pgvector-ready) |
 | **AI** | Anthropic Claude (`claude-sonnet-5`) | Writes the SOAP note + looks up patient history |
-| **Testing** | Playwright | 17 end-to-end browser tests, all green |
-| **Cloud** | AWS (EC2, RDS, Secrets Manager) via Terraform | Production deployment, defined as code |
+| **Testing** | Playwright (E2E) + `scripts/prod_smoke.py` (live API) | Browser tests green; smoke test exercises every endpoint in prod |
+| **Cloud** | AWS (EC2, RDS, Secrets Manager) via Terraform | Production deployment, defined as code, **applied & verified** |
 
 ---
 
@@ -127,7 +133,13 @@ powershell -File scripts/pg-stop.ps1
 
 ```powershell
 cd frontend
-npm run test:e2e        # 17 Playwright end-to-end tests (both servers must be running)
+npm run test:e2e        # Playwright end-to-end tests (both servers must be running)
+```
+
+**Smoke-test the live deployment** (every backend feature, against the deployed URL):
+
+```bash
+python scripts/prod_smoke.py    # health, auth+RBAC, semantic ICD, generation, versioning, admin, refresh
 ```
 
 ---
@@ -138,7 +150,7 @@ npm run test:e2e        # 17 Playwright end-to-end tests (both servers must be r
 Clinical Scribe/
 ├── backend/      FastAPI server — auth, note generation, ICD codes, admin, database
 ├── frontend/     React app — login, workspace, admin dashboard, E2E tests
-├── infra/        AWS deployment defined as Terraform (designed, not yet deployed)
+├── infra/        AWS deployment as Terraform (applied & verified; see infra/README.md)
 ├── scripts/      Helper scripts (start/stop the local database)
 └── docs/         Architecture, ERD, and design decisions
 ```
@@ -169,8 +181,11 @@ This is a **portfolio / take-home project** built to demonstrate a full-stack, A
 application end-to-end.
 
 - ✅ **Feature-complete** — everything above works and is covered by automated tests.
-- 📐 **Cloud deployment designed** — the full AWS infrastructure is written as Terraform in
-  [`infra/`](infra/README.md), reviewed and ready, but not applied to a live account.
+- ☁️ **Deployed & verified on AWS** — the full Terraform stack in [`infra/`](infra/README.md)
+  was applied to a live account and smoke-tested end-to-end over HTTPS: EC2 behind nginx,
+  **private** RDS (VPC-only), Secrets Manager, connection pooling, and a real Let's Encrypt
+  certificate. The instance is torn down between sessions to avoid idle billing and re-applied
+  on demand (stable URL).
 
 ---
 
