@@ -2,10 +2,10 @@
 # ===========================================================================
 # First-boot provisioning for the Clinical Scribe web/app instance.
 #
-# Rendered by Terraform's templatefile(): the $${...}-free ${...} tokens below
-# (e.g. ${aws_region}, ${duckdns_subdomain}, ${secret_arn}) are substituted by
-# Terraform BEFORE this ever reaches the instance. Plain bash variables are
-# written as $VAR (no braces) so Terraform leaves them untouched.
+# Rendered by Terraform's templatefile(): the $${aws_region} / $${secret_arn}
+# style $${...} tokens below are substituted by Terraform BEFORE this ever reaches
+# the instance. Plain bash variables are written as $VAR (no braces) so Terraform
+# leaves them untouched.
 #
 # Flow:
 #   1. Point the DuckDNS subdomain at our Elastic IP (so DNS resolves before ACME)
